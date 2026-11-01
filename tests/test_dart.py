@@ -19,6 +19,7 @@ import server
 class Source(BaseHTTPRequestHandler):
     video = b''
     image = b'\x89PNG\r\n\x1a\nEXAMPLE'
+    avatars = {}
     def log_message(self, *_):
         pass
 
@@ -28,7 +29,10 @@ class Source(BaseHTTPRequestHandler):
             self.send_header('Location', 'http://127.0.0.1/private')
             self.end_headers()
             return
-        if self.path == '/video.mp4':
+        if self.path in self.avatars:
+            payload = self.avatars[self.path]
+            mime = 'image/jpeg'
+        elif self.path == '/video.mp4':
             payload = self.video
             mime = 'video/mp4'
         elif self.path == '/page':
@@ -419,7 +423,7 @@ class DartTests(unittest.TestCase):
         body = '<script type="application/json">'+json.dumps(data)+'</script>'
         with patch('server.open_url',return_value=self.profile_response(body,url)), patch('server.instagram_api_avatar',return_value=['https://images.test/large.jpg']) as lookup, patch('server.largest_avatar',return_value=('https://images.test/large.jpg',(1080,1080))) as compare:
             avatar, title = server.image_link(url,profile=True)
-        lookup.assert_called_once_with('example',all_candidates=True)
+        lookup.assert_called_once_with('example',all_candidates=True,user_ids=[])
         self.assertIn('https://images.test/small.jpg',compare.call_args.args[0])
         self.assertEqual(avatar,'https://images.test/large.jpg')
         self.assertIn('1080 × 1080',title)
@@ -433,6 +437,94 @@ class DartTests(unittest.TestCase):
                 path.write_bytes(source.read_bytes())
                 output, _ = server.convert_file({'dir':Path(directory),'kind':'photo','output_format':fmt},path,'source.png')
                 self.assertEqual(server.raster_size(output.read_bytes()),(32,32))
+
+
+    def test_direct_account_info_finds_hd_after_web_thumbnail(self):
+        url = 'https://www.instagram.com/example/'
+        web = json.dumps({'data':{'user':{'username':'example','id':'12345','profile_pic_url':'https://images.test/small.jpg'}}})
+        full = json.dumps({'user':{'username':'example','pk':'12345','is_private':True,'hd_profile_pic_url_info':{'url':'https://images.test/full.jpg','width':1080,'height':1080}}})
+        with patch('server.open_url',side_effect=[self.profile_response(web,url,'application/json'),self.profile_response(full,url,'application/json')]) as opened:
+            urls = server.instagram_api_avatar('example',all_candidates=True)
+        self.assertEqual(urls[0],'https://images.test/full.jpg')
+        self.assertEqual(opened.call_args_list[1].args[0],'https://www.instagram.com/api/v1/users/12345/info/')
+
+    def test_account_id_from_page_survives_blocked_web_metadata(self):
+        full = json.dumps({'user':{'username':'example','hd_profile_pic_url_info':{'url':'https://images.test/full.jpg'}}})
+        blocked = urllib.error.HTTPError('https://www.instagram.com/',401,'Login required',{},None)
+        with patch('server.open_url',side_effect=[blocked,self.profile_response(full,'https://www.instagram.com/','application/json')]):
+            urls = server.instagram_api_avatar('example',all_candidates=True,user_ids=['12345'])
+        self.assertEqual(urls,['https://images.test/full.jpg'])
+
+    def test_account_info_wrong_username_rejected(self):
+        web = json.dumps({'data':{'user':{'username':'example','id':'12345','profile_pic_url':'https://images.test/small.jpg'}}})
+        full = json.dumps({'user':{'username':'different','hd_profile_pic_url_info':{'url':'https://images.test/wrong.jpg'}}})
+        with patch('server.open_url',side_effect=[self.profile_response(web,'https://www.instagram.com/','application/json'),self.profile_response(full,'https://www.instagram.com/','application/json')]):
+            urls = server.instagram_api_avatar('example',all_candidates=True)
+        self.assertNotIn('https://images.test/wrong.jpg',urls)
+
+    def test_optional_session_is_instagram_scoped(self):
+        import instagram_session
+        import os
+        with tempfile.TemporaryDirectory(dir=self.tmp.name) as directory:
+            path = Path(directory)/'session.cookies.txt'
+            path.write_text('# Netscape HTTP Cookie File\n.instagram.com\tTRUE\t/\tTRUE\t0\tsessionid\tTEST_ONLY\n.example.test\tTRUE\t/\tTRUE\t0\tother\tTEST_ONLY\n')
+            path.chmod(0o600)
+            client = instagram_session.InstagramSession(path,urllib.request.ProxyHandler({}))
+            processor = next(h for h in client.opener.handlers if isinstance(h,urllib.request.HTTPCookieProcessor))
+            self.assertTrue(all(c.domain=='.instagram.com' for c in processor.cookiejar))
+            with self.assertRaises(ValueError):
+                client.get_json('https://example.test/api')
+            redirect = instagram_session.InstagramRedirect()
+            with self.assertRaises(ValueError):
+                redirect.redirect_request(None,None,302,'',{},'https://example.test/')
+            if os.name=='posix':
+                path.chmod(0o644)
+                with self.assertRaisesRegex(ValueError,'chmod 600'):
+                    instagram_session.InstagramSession(path,urllib.request.ProxyHandler({}))
+
+    def test_small_avatar_explicitly_labelled_thumbnail(self):
+        url = 'https://www.instagram.com/example/'
+        body = '<script type="application/json">'+json.dumps({'username':'example','id':'12345','profile_pic_url':'https://images.test/small.jpg'})+'</script>'
+        with patch('server.open_url',return_value=self.profile_response(body,url)), patch('server.instagram_api_avatar',return_value=['https://images.test/small.jpg']), patch('server.largest_avatar',return_value=('https://images.test/small.jpg',(100,100))):
+            _, title = server.image_link(url,profile=True)
+        self.assertIn('thumbnail only',title)
+
+
+    def test_profile_hd_end_to_end_direct_instagram_routes(self):
+        import shutil
+        if not shutil.which('ffmpeg'):
+            self.skipTest('FFmpeg required for real 1080px fixture')
+        for size in (100,1080):
+            target = Path(self.tmp.name)/f'avatar-{size}.jpg'
+            subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-y','-f','lavfi','-i',f'color=c=blue:s={size}x{size}',
+                            '-frames:v','1','-threads','1',str(target)],check=True,capture_output=True)
+            Source.avatars[f'/avatar-{size}.jpg'] = target.read_bytes()
+        profile = 'https://www.instagram.com/example/'
+        account = {'username':'example','id':'12345','profile_pic_url':'http://source.test/avatar-100.jpg'}
+        page = '<script type="application/json">'+json.dumps(account)+'</script>'
+        web = json.dumps({'data':{'user':account}})
+        full = json.dumps({'user':{'username':'example','pk':'12345','hd_profile_pic_url_info':
+                                {'url':'http://source.test/avatar-1080.jpg','width':1080,'height':1080}}})
+        original = server.open_url
+        def fixture(url,headers=None):
+            if url==profile:
+                return self.profile_response(page,url)
+            if '/web_profile_info/' in url:
+                return self.profile_response(web,url,'application/json')
+            if url=='https://www.instagram.com/api/v1/users/12345/info/':
+                return self.profile_response(full,url,'application/json')
+            return original(url,headers)
+        with patch('server.open_url',side_effect=fixture):
+            key, job = self.inspect('profile',profile)
+            self.assertEqual(job['state'],'ready',job)
+            self.assertIn('1080 × 1080',job['title'])
+            self.request(f'/api/jobs/{key}/download',{'quality':'original','format':'original'})
+            job = self.wait(key)
+            self.assertEqual(job['state'],'done',job)
+            self.assertEqual(job['dimensions'],[1080,1080])
+            data, headers = self.request(f'/api/jobs/{key}/file')
+            self.assertEqual(data,Source.avatars['/avatar-1080.jpg'])
+            self.assertIn('1080x1080',headers['Content-Disposition'])
 
 
 if __name__ == '__main__':

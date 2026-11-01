@@ -1,5 +1,7 @@
 __pycache__/
 .venv/
 .env
+*.cookies.txt
+instagram-cookies.txt
 *.pyc
 .dart-data/

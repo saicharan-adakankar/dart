@@ -102,7 +102,7 @@ async function poll(token) {
       const qualities=kind()==='video' ? [['best','Best available'],...job.qualities.map(q=>[q,`Up to ${q}p`])] : [['original','Source quality']];
       for(const [value,label] of qualities) $('quality').add(new Option(label,value));
       for(const value of job.formats || ['original']) $('format').add(new Option(formatLabels[value] || value.toUpperCase(),value));
-      $('quality-note').textContent=kind()==='video' ? 'Source resolution is never upscaled. Conversion cannot recover quality already lost.' : kind()==='file' ? 'Your file is streamed unchanged.' : kind()==='profile' ? 'Uses the best avatar source exposed by the platform. No artificial sharpening or upscaling; Original preserves its bytes.' : 'A page may expose a compressed preview rather than the original image.';
+      $('quality-note').textContent=kind()==='video' ? 'Source resolution is never upscaled. Conversion cannot recover quality already lost.' : kind()==='file' ? 'Your file is streamed unchanged.' : kind()==='profile' ? 'Retrieves source images directly from the platform. Actual dimensions are shown; HD access may require a local Instagram session.' : 'A page may expose a compressed preview rather than the original image.';
       syncFormat(); $('download').hidden=false; $('save').hidden=true; $('result').focus(); return;
     }
     if(job.state==='done') {
@@ -111,7 +111,7 @@ async function poll(token) {
       $('save').href=`/api/jobs/${jobId}/file`; $('save').download=job.filename;
       $('save').firstChild.textContent=`Save ${job.filename.split('.').pop().toUpperCase()} file `;
       message(job.dimensions ? `Ready · ${job.dimensions[0]} × ${job.dimensions[1]} pixels. Save your image below.` : 'Ready. Your file is within reach.',100);
-      if(kind()==='profile' && job.dimensions) $('quality-note').textContent=`Downloaded image: ${job.dimensions[0]} × ${job.dimensions[1]} pixels. No artificial upscaling applied.`; $('cancel').hidden=true;
+      if(kind()==='profile' && job.dimensions) $('quality-note').textContent=Math.min(...job.dimensions)<=150 ? `Thumbnail only: ${job.dimensions[0]} × ${job.dimensions[1]} pixels. Instagram did not return a larger source to this session. No artificial upscaling applied.` : `Downloaded source: ${job.dimensions[0]} × ${job.dimensions[1]} pixels. No artificial upscaling applied.`; $('cancel').hidden=true;
       $('save').focus(); return;
     }
     const text=job.state==='queued' ? 'Queued. Your file is up next…' : job.stage==='converting' ? 'Converting to your chosen format…' : $('result').hidden ? 'Finding available media…' : 'Retrieving your file…';

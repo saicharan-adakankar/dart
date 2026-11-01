@@ -78,7 +78,7 @@ DART imposes no file-size cap or overall download-duration limit. Available disk
 - `proxy.py`: loopback-only egress proxy used by direct fetches and yt-dlp. It resolves each destination, rejects any private/reserved DNS answers, and connects to the validated IP. Redirect requests are checked again. Only ports 80/443 are allowed. Native HTTP media download protocols are selected; FFmpeg is used for local merging.
 - `.github/workflows/checks.yml`: API/security tests, real generated-video extraction, JavaScript syntax validation, and Docker build.
 
-No uploaded cookies, platform credentials, custom extractor commands, external image requests from the frontend, or private-network fetching. Instagram avatar lookup uses public page data first, then one public metadata request; it does not access private posts or automatically retry blocks. Responses include a restrictive content security policy and no-store headers. Requests do not log submitted URLs or job identifiers.
+No credential uploads, custom extractor commands, external image requests from the frontend, or private-network fetching. An optional local Instagram cookie file can be configured by the server owner for direct Instagram metadata requests. Its cookies are scoped to Instagram and never forwarded to image CDNs or other services. Blocked requests are not retried or bypassed. Responses include a restrictive content security policy and no-store headers. Requests do not log submitted URLs or job identifiers.
 
 ## Deployment
 
@@ -114,8 +114,24 @@ yt-dlp is pinned in `requirements.txt` for reproducibility. Platform changes may
 
 ### Profile picture lookup
 
-Instagram profile links are parsed as account identities (post/Reel URLs are rejected). The resolver prefers high-resolution avatar fields belonging to that username, including nested and JSON-encoded page data. A private-account flag alone does not prevent retrieval of an avatar the platform returns publicly. If the page lacks the avatar, DART tries the public profile-metadata endpoint once. It does not use third-party lookup services, logins, or cookies. The endpoint is unofficial and may change, throttle requests, or require login. Controlled fixtures verify both private/public flags and identity matching; successful retrieval for every live profile is not guaranteed.
+Instagram profile links are parsed as account identities (post/Reel URLs are rejected). The resolver prefers high-resolution avatar fields belonging to that username, including nested and JSON-encoded page data. A private-account flag alone does not prevent retrieval of an avatar the platform returns publicly. DART gathers page candidates, web-profile metadata, and direct numeric-ID account info. Anonymous lookup is the default; an optional owner-configured local Instagram session can be used for HD metadata. It never uses third-party downloaders. These endpoints are unofficial and may change, throttle requests, or require login. Controlled fixtures verify both private/public flags and identity matching; successful retrieval for every live profile is not guaranteed.
 
 Profile-image clarity comes from the source: declared HD avatar URLs take priority over thumbnail fields, and dimensioned source variants are ranked by pixel area. DART does not invent high-resolution URLs, enlarge a preview, or claim to recover an original the platform does not expose. Choose Original to preserve the fetched bytes.
 
 Avatar resolution verification: Instagram page metadata no longer stops the public profile-metadata lookup. DART gathers account-matched source variants, compares actual PNG/JPEG/WebP image-header dimensions (up to six unique candidates, up to 256 KB per probe), and selects the largest measured image. It does not rewrite signed CDN URLs or invent an original URL. The UI reports the selected source dimensions and final image dimensions. If no dimensions can be read, the preferred exposed URL remains a fallback. Specific live-profile results still need verification against the supplied profile link.
+
+### Direct Instagram HD resolver
+
+DART has no InDown integration and never sends profile links to another downloader. It resolves the account username and numeric ID from Instagram page/web metadata, then requests `https://www.instagram.com/api/v1/users/{id}/info/` to obtain available HD avatar fields. Username matching is enforced on both responses. Actual candidate image dimensions determine the selected source. A returned image of 150 pixels or less on its shorter side is explicitly labelled **thumbnail only**, and image filenames include the measured dimensions.
+
+Some Instagram HD metadata requires authentication. For single-user local use, the server owner can optionally configure their own Instagram session in Netscape cookie-file format, stored outside the repository. Never upload or commit that file. DART does not provide a credential-upload or browser-cookie-extraction feature.
+
+```bash
+chmod 600 /absolute/path/to/instagram.cookies.txt
+export DART_INSTAGRAM_COOKIE_FILE=/absolute/path/to/instagram.cookies.txt
+python server.py
+```
+
+The session is used only for HTTPS requests to Instagram's own domains. Only Instagram-domain cookies are retained; redirects to other domains are rejected. File permissions must be private on macOS/Linux. Login, MFA, and challenges must be completed normally outside DART. A session does not guarantee access, remove rate limits, or grant access to private posts.
+
+These are unofficial Instagram client endpoints and may change. Integration tests verify the numeric-ID/HD route and session scoping with controlled fixtures. The specific live profile's direct account-info route has not been verified from this development environment; the previously observed 1080 × 1080 third-party result is not evidence that anonymous DART requests can access the same metadata.

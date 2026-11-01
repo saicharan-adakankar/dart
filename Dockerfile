@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certi
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY server.py proxy.py ./
+COPY server.py proxy.py instagram_session.py ./
 COPY web ./web
 RUN useradd --uid 1000 --create-home dart && mkdir /data && chown dart:dart /data
 USER dart

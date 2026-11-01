@@ -273,18 +273,48 @@ def largest_avatar(urls):
     return (best[1], best[2]) if best else (urls[0], None) if urls else (None, None)
 
 
-def instagram_api_avatar(username, all_candidates=False):
-    # Public profile metadata only. No cookies, credentials, or access-control bypass.
+def instagram_api_avatar(username, all_candidates=False, user_ids=()):
+    # Resolve the account, then request its full account info directly from Instagram.
+    # Optional owner-supplied session cookies stay local and Instagram-domain scoped.
     endpoint = 'https://www.instagram.com/api/v1/users/web_profile_info/?' + urllib.parse.urlencode({'username': username})
+    session = None
+    cookie_file = os.environ.get('DART_INSTAGRAM_COOKIE_FILE')
+    if cookie_file:
+        from instagram_session import InstagramSession
+        try:
+            session = InstagramSession(cookie_file,PublicOpener({'http':PROXY_URL,'https':PROXY_URL}))
+        except (OSError,ValueError):
+            raise ValueError('The local Instagram session file could not be loaded. Check its Netscape cookie format and private permissions (chmod 600).')
+    def query(url):
+        if session:
+            return session.get_json(url)
+        with open_url(url, {'Accept':'application/json','X-IG-App-ID':'936619743392459'}) as response:
+            return json.loads(response.read(2*1024*1024))
+    candidates = []
+    ids = [str(value) for value in user_ids if str(value).isdigit()]
     try:
-        with open_url(endpoint, {'Accept': 'application/json', 'X-IG-App-ID': '936619743392459'}) as response:
-            data = json.loads(response.read(2 * 1024 * 1024))
+        data = query(endpoint)
         user = (data.get('data') or {}).get('user') or {}
         if str(user.get('username', '')).lower() == username:
-            return avatar_urls(user) if all_candidates else avatar_field(user)
+            candidates.extend(avatar_urls(user))
+            user_id = str(user.get('pk') or user.get('id') or '')
+            if user_id.isdigit():
+                ids.insert(0,user_id)
     except (OSError, ValueError, AttributeError, RecursionError):
         pass
-    return None
+    # This is the missing HD lookup: page/web metadata often has only a 100px
+    # thumbnail, whereas account info can expose hd_profile_pic_url_info/versions.
+    for user_id in list(dict.fromkeys(ids))[:1]:
+        try:
+            data = query(f'https://www.instagram.com/api/v1/users/{user_id}/info/')
+            user = data.get('user') or {}
+            if str(user.get('username','')).lower() == username:
+                candidates = avatar_urls(user) + candidates
+        except (OSError,ValueError,AttributeError,RecursionError):
+            # No retry, host switching, or challenge bypass on a rejected request.
+            pass
+    candidates = list(dict.fromkeys(candidates))
+    return candidates if all_candidates else candidates[0] if candidates else None
 
 
 def profile_image(content, parser, url, username=None):
@@ -346,16 +376,18 @@ def image_link(url, profile=False):
             if username:
                 # Always compare public API candidates, even when page metadata
                 # already contains a small avatar or a misleading "HD" URL.
-                urls = instagram_api_avatar(username, all_candidates=True) or []
-                for node in json_nodes(parser.scripts):
-                    if str(node.get('username', '')).lower() == username:
-                        urls.extend(avatar_urls(node))
+                account_nodes = [node for node in json_nodes(parser.scripts) if str(node.get('username','')).lower() == username]
+                user_ids = [node.get('pk') or node.get('id') for node in account_nodes if str(node.get('pk') or node.get('id') or '').isdigit()]
+                urls = instagram_api_avatar(username, all_candidates=True, user_ids=user_ids) or []
+                for node in account_nodes:
+                    urls.extend(avatar_urls(node))
                 if avatar:
                     urls.append(avatar)
                 urls = [urllib.parse.urljoin(response.url, u) for u in urls]
                 avatar, size = largest_avatar(urls)
                 if avatar and size:
-                    return validate_url(avatar), '@' + username + f' · {size[0]} × {size[1]} source'
+                    label = 'thumbnail only — Instagram did not expose a larger source to this session' if min(size) <= 150 else 'source'
+                    return validate_url(avatar), '@' + username + f' · {size[0]} × {size[1]} {label}'
             if not avatar:
                 raise ValueError('The platform did not return a publicly accessible avatar for this profile. A private profile can work when its avatar is public; a login requirement or platform block cannot be bypassed. You can also use the direct avatar image link.')
             return validate_url(urllib.parse.urljoin(response.url, avatar)), ('@' + username + ' · profile picture') if username else 'Public profile image'
@@ -497,6 +529,8 @@ def work(job, action):
         if job['kind'] in ('photo', 'profile'):
             with path.open('rb') as image:
                 dimensions = raster_size(image.read(256 * 1024))
+            if dimensions:
+                name = Path(name).stem + f'-{dimensions[0]}x{dimensions[1]}' + Path(name).suffix
         job.update(path=path, filename=name, content_type=mimetypes.guess_type(name)[0] or 'application/octet-stream', dimensions=dimensions, state='done', stage='done', progress=100)
     except Exception as e:
         job.update(state='cancelled' if job.get('cancelled') else 'error', error=str(e) if isinstance(e, ValueError) else 'The source could not be reached. Check the link and try again.')
