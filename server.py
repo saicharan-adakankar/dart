@@ -165,10 +165,32 @@ def json_nodes(scripts):
 
 
 def avatar_field(node):
-    for key in ('profile_pic_url_hd', 'profile_pic_url', 'avatar_url', 'profile_image_url_https'):
+    # Prefer declared HD originals before small UI thumbnails. Never fabricate a
+    # higher-resolution URL or sharpen/upscale a source preview.
+    hd = []
+    value = node.get('profile_pic_url_hd')
+    if isinstance(value, str) and value:
+        hd.append((float('inf'), value))
+    info = node.get('hd_profile_pic_url_info')
+    if isinstance(info, dict) and isinstance(info.get('url'), str) and info['url']:
+        width, height = info.get('width'), info.get('height')
+        area = width * height if isinstance(width, (int, float)) and isinstance(height, (int, float)) and width > 0 and height > 0 else float('inf')
+        hd.append((area, info['url']))
+    for key in ('hd_profile_pic_versions', 'profile_pic_versions'):
+        versions = node.get(key)
+        if isinstance(versions, list):
+            for version in versions:
+                if not isinstance(version, dict):
+                    continue
+                url, width, height = version.get('url'), version.get('width'), version.get('height')
+                if isinstance(url, str) and url and isinstance(width, (int, float)) and isinstance(height, (int, float)) and width > 0 and height > 0:
+                    hd.append((width * height, url))
+    if hd:
+        return max(hd, key=lambda candidate: candidate[0])[1]
+    for key in ('profile_pic_url', 'avatar_url', 'profile_image_url_https'):
         if isinstance(node.get(key), str) and node[key]:
             return node[key]
-    for key in ('hd_profile_pic_url_info', 'profile_picture', 'profilePicture'):
+    for key in ('profile_picture', 'profilePicture'):
         value = node.get(key)
         if isinstance(value, dict) and isinstance(value.get('url') or value.get('uri'), str):
             return value.get('url') or value['uri']

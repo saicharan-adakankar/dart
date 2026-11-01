@@ -115,3 +115,5 @@ yt-dlp is pinned in `requirements.txt` for reproducibility. Platform changes may
 ### Profile picture lookup
 
 Instagram profile links are parsed as account identities (post/Reel URLs are rejected). The resolver prefers high-resolution avatar fields belonging to that username, including nested and JSON-encoded page data. A private-account flag alone does not prevent retrieval of an avatar the platform returns publicly. If the page lacks the avatar, DART tries the public profile-metadata endpoint once. It does not use third-party lookup services, logins, or cookies. The endpoint is unofficial and may change, throttle requests, or require login. Controlled fixtures verify both private/public flags and identity matching; successful retrieval for every live profile is not guaranteed.
+
+Profile-image clarity comes from the source: declared HD avatar URLs take priority over thumbnail fields, and dimensioned source variants are ranked by pixel area. DART does not invent high-resolution URLs, enlarge a preview, or claim to recover an original the platform does not expose. Choose Original to preserve the fetched bytes.

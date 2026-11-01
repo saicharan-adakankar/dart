@@ -102,7 +102,7 @@ async function poll(token) {
       const qualities=kind()==='video' ? [['best','Best available'],...job.qualities.map(q=>[q,`Up to ${q}p`])] : [['original','Source quality']];
       for(const [value,label] of qualities) $('quality').add(new Option(label,value));
       for(const value of job.formats || ['original']) $('format').add(new Option(formatLabels[value] || value.toUpperCase(),value));
-      $('quality-note').textContent=kind()==='video' ? 'Source resolution is never upscaled. Conversion cannot recover quality already lost.' : kind()==='file' ? 'Your file is streamed unchanged.' : 'A page may expose a compressed preview rather than the original image.';
+      $('quality-note').textContent=kind()==='video' ? 'Source resolution is never upscaled. Conversion cannot recover quality already lost.' : kind()==='file' ? 'Your file is streamed unchanged.' : kind()==='profile' ? 'Uses the best avatar source exposed by the platform. No artificial sharpening or upscaling; Original preserves its bytes.' : 'A page may expose a compressed preview rather than the original image.';
       syncFormat(); $('download').hidden=false; $('save').hidden=true; $('result').focus(); return;
     }
     if(job.state==='done') {

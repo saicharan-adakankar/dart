@@ -358,6 +358,18 @@ class DartTests(unittest.TestCase):
         parser.feed(body)
         self.assertEqual(server.profile_image(body,parser,'https://www.instagram.com/example/','example'),data['profile_pic_url_hd'])
 
+    def test_source_hd_avatar_preferred_over_thumbnail(self):
+        node = {'profile_pic_url':'https://images.test/thumbnail.jpg',
+                'hd_profile_pic_url_info':{'url':'https://images.test/source.jpg','width':1080,'height':1080}}
+        self.assertEqual(server.avatar_field(node),'https://images.test/source.jpg')
+
+    def test_largest_source_avatar_variant(self):
+        node = {'profile_pic_url':'https://images.test/thumbnail.jpg','hd_profile_pic_versions':[
+            {'url':'https://images.test/320.jpg','width':320,'height':320},
+            {'url':'https://images.test/1080.jpg','width':1080,'height':1080},
+            {'url':'https://images.test/640.jpg','width':640,'height':640}]}
+        self.assertEqual(server.avatar_field(node),'https://images.test/1080.jpg')
+
     def test_instagram_api_fallback(self):
         url = 'https://www.instagram.com/example/'
         page = '<title>Sign in to Instagram</title>'
