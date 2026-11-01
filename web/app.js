@@ -1,9 +1,10 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let jobId = null, pollTimer = null, generation = 0, busy = false, selectedPlatform = 'auto';
-const names = {video:'video',photo:'photo',profile:'profile picture',file:'file'};
+let spotifyEnabled = false, musicMatches = [];
+const names = {video:'video',photo:'photo',profile:'profile picture',file:'file',music:'song'};
 const audioFormats = new Set(['mp3','m4a','wav']);
-const platforms = {YouTube:['youtube.com','youtu.be'],Instagram:['instagram.com'],Facebook:['facebook.com','fb.watch'],X:['x.com','twitter.com']};
+const platforms = {YouTube:['youtube.com','youtu.be'],Instagram:['instagram.com'],Facebook:['facebook.com','fb.watch'],X:['x.com','twitter.com'],Spotify:['open.spotify.com']};
 const formatLabels = {original:'Original · keep source',mp4:'MP4 · video',mkv:'MKV · video',webm:'WebM · video',mp3:'MP3 · audio',m4a:'M4A · audio',wav:'WAV · audio',png:'PNG',jpg:'JPEG',webp:'WebP'};
 const formatNotes = {
   original:'Keep the source format. No conversion or re-encoding.',
@@ -17,6 +18,11 @@ const formatNotes = {
   jpg:'Convert PNG, JPEG or WebP input to a JPEG still image. Transparency and animation are not preserved.',
   webp:'Convert PNG, JPEG or WebP input to a lossless WebP still image. The first frame is used.'
 };
+function syncMusicMatch() {
+  const match=musicMatches.find(item=>item.id===$('music-match').value);
+  $('music-source-link').hidden=!match;
+  if(match) $('music-source-link').href=match.url;
+}
 function kind() { return document.querySelector('input[name="kind"]:checked').value; }
 function detect(value) {
   try {
@@ -47,7 +53,7 @@ function syncHints() {
   $('url').placeholder = name ? `Paste a ${name} ${noun} link` : kind()==='file' ? 'Paste a direct file URL' : `Paste a ${noun} link`;
   $('panel-title').textContent = name ? `${name} downloader` : 'Download media';
   $('inspect').firstElementChild.textContent = `Find ${noun}`;
-  $('hint').textContent = kind()==='profile' ? 'Publicly visible avatars, including on private accounts.' : kind()==='file' ? 'Use a direct file URL, rather than a webpage.' : 'Public links only. We’ll detect the source.';
+  $('hint').textContent = kind()==='profile' ? 'Publicly visible avatars, including on private accounts.' : kind()==='music' ? 'Spotify track links only. Confirm a separate audio source before downloading.' : kind()==='file' ? 'Use a direct file URL, rather than a webpage.' : 'Public links only. We’ll detect the source.';
 }
 async function api(path,body) {
   const response = await fetch(path,body===undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -57,7 +63,7 @@ async function api(path,body) {
 }
 function setBusy(value) {
   busy=value;
-  for(const id of ['inspect','download','url','types','clear','quality','format']) $(id).disabled=value;
+  for(const id of ['inspect','download','url','types','clear','quality','format','music-match']) $(id).disabled=value;
   document.querySelectorAll('.platform-tile').forEach(tile=>{tile.disabled=value;});
   if(!value) syncFormat();
 }
@@ -81,6 +87,7 @@ function fail(error) {
 }
 function reset(focus=false) {
   generation++; clearTimeout(pollTimer);
+  musicMatches=[]; $('music-matches').hidden=true;
   const previous=jobId; jobId=null;
   if(previous) api(`/api/jobs/${previous}/cancel`,{}).catch(()=>{});
   setBusy(false); $('result').hidden=true; $('save').hidden=true; $('status-area').hidden=true; $('error').hidden=true;
@@ -103,6 +110,15 @@ async function poll(token) {
       for(const [value,label] of qualities) $('quality').add(new Option(label,value));
       for(const value of job.formats || ['original']) $('format').add(new Option(formatLabels[value] || value.toUpperCase(),value));
       $('quality-note').textContent=kind()==='video' ? 'Source resolution is never upscaled. Conversion cannot recover quality already lost.' : kind()==='file' ? 'Your file is streamed unchanged.' : kind()==='profile' ? 'Retrieves source images directly from the platform. Actual dimensions are shown; HD access may require a local Instagram session.' : 'A page may expose a compressed preview rather than the original image.';
+      $('music-matches').hidden=kind()!=='music';
+      if(kind()==='music') {
+        musicMatches=job.matches || [];
+        $('music-match').replaceChildren(new Option('Choose a recording…',''));
+        for(const item of musicMatches) $('music-match').add(new Option(`${item.title} · ${Math.round(item.duration)}s · ${item.channel}`,item.id));
+        $('spotify-track-link').href=job.track.url;
+        $('quality-note').textContent='Choose and confirm a suggested recording. Its audio comes from YouTube, not Spotify; versions and quality may differ.';
+        syncMusicMatch();
+      }
       syncFormat(); $('download').hidden=false; $('save').hidden=true; $('result').focus(); return;
     }
     if(job.state==='done') {
@@ -134,17 +150,18 @@ $('form').addEventListener('submit',async event=>{
 });
 $('download').addEventListener('click',async()=>{
   if(busy || !jobId) return;
+  if(kind()==='music' && !$('music-match').value) {fail(new Error('Choose a recording and check its source before downloading.'));return;}
   const token=generation; setBusy(true); $('error').hidden=true; message('Preparing your download…');
-  try { await api(`/api/jobs/${jobId}/download`,{quality:audioFormats.has($('format').value) ? 'best' : $('quality').value,format:$('format').value}); if(token===generation) poll(token); }
+  try { await api(`/api/jobs/${jobId}/download`,{quality:audioFormats.has($('format').value) ? 'best' : $('quality').value,format:$('format').value,match:kind()==='music' ? $('music-match').value : undefined}); if(token===generation) poll(token); }
   catch(error) { if(token===generation) fail(error); }
 });
-$('url').addEventListener('input',()=>{syncSource(); $('error').hidden=true;});
+$('url').addEventListener('input',()=>{if(spotifyEnabled && detect($('url').value.trim())?.name==='Spotify' && kind()!=='music') {document.querySelector('input[value=music]').checked=true;syncHints();} syncSource(); $('error').hidden=true;});
 $('clear').addEventListener('click',()=>{$('url').value=''; syncSource(); $('error').hidden=true; $('url').focus();});
 $('format').addEventListener('change',syncFormat);
 for(const input of document.querySelectorAll('input[name="kind"]')) input.addEventListener('change',()=>{reset();syncHints();});
 for(const tile of document.querySelectorAll('.platform-tile')) tile.addEventListener('click',()=>{
   if(busy) return;
-  reset(); selectedPlatform=tile.dataset.platform; syncSource(); syncHints();
+  reset(); selectedPlatform=tile.dataset.platform; if(selectedPlatform==='Spotify') document.querySelector('input[value=music]').checked=true; else if(kind()==='music' && selectedPlatform!=='auto') document.querySelector('input[value=video]').checked=true; syncSource(); syncHints();
 });
 $('cancel').addEventListener('click',()=>reset(true)); $('reset').addEventListener('click',()=>reset(true));
 function syncTheme() {
@@ -166,3 +183,10 @@ window.addEventListener('storage',event=>{
 // CSS media queries respond directly to viewport and orientation changes.
 // Do not lock screen orientation: portrait, landscape and split-view remain usable.
 syncTheme(); syncSource(); syncHints();
+
+$('music-match').addEventListener('change',syncMusicMatch);
+api('/api/features').then(features=>{
+  spotifyEnabled=features.spotify_matching===true;
+  $('spotify-tile').hidden=!spotifyEnabled; $('music-type').hidden=!spotifyEnabled;
+  document.body.classList.toggle('spotify-enabled',spotifyEnabled);
+}).catch(()=>{ /* Optional experiment remains hidden if unsupported. */ });

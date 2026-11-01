@@ -66,3 +66,17 @@
   .platform-icon{width:42px;height:auto}.platform-icon svg{width:20px;height:20px}.brand-bat{width:32px}
 }
 @media(prefers-reduced-motion:reduce){.brand:hover .bat-wing,.brand:focus-visible .bat-wing{animation:none}.platform-tile,.platform-icon,.platform-icon::before{transition:none}}
+
+/* Optional music experiment; the default downloader stays unchanged. */
+.platform-tile[data-platform=Spotify]{--platform-color:#178747;--platform-ink:#fff}
+.spotify-icon svg circle{fill:currentColor;stroke:none}.spotify-icon svg path{stroke:var(--panel);stroke-width:1.6;stroke-linecap:round}
+.platform-tile.selected .spotify-icon svg path,.platform-tile:hover .spotify-icon svg path,.platform-tile:focus-visible .spotify-icon svg path{stroke:var(--platform-color)}
+.spotify-enabled .platform-grid{grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
+.spotify-enabled fieldset{grid-template-columns:1fr 1fr 1.4fr .8fr 1.1fr}
+.music-matches{border:1px solid var(--line-strong);border-radius:10px;background:var(--input);padding:15px;margin-bottom:20px}
+.music-matches h3{font-size:12px;margin:0 0 10px;font-weight:600}.music-matches p{font-size:11px;line-height:1.7;color:var(--muted);margin:0 0 12px}
+.music-matches label{display:block;font-size:11px;color:var(--muted);margin:14px 0 8px}
+.music-matches select{width:100%;min-width:0;background:var(--panel);color:var(--text);border:1px solid var(--line-strong);border-radius:7px;padding:11px 8px;font-size:12px;min-height:44px}
+.music-matches a{display:block;font-size:11px;color:var(--accent);margin-top:10px;overflow-wrap:anywhere}
+@media(max-width:480px) and (orientation:portrait){.spotify-enabled .platform-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.spotify-enabled fieldset{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:950px) and (orientation:landscape) and (max-height:600px){.spotify-enabled .platform-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}

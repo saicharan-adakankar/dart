@@ -135,3 +135,18 @@ python server.py
 The session is used only for HTTPS requests to Instagram's own domains. Only Instagram-domain cookies are retained; redirects to other domains are rejected. File permissions must be private on macOS/Linux. Login, MFA, and challenges must be completed normally outside DART. A session does not guarantee access, remove rate limits, or grant access to private posts.
 
 These are unofficial Instagram client endpoints and may change. Integration tests verify the numeric-ID/HD route and session scoping with controlled fixtures. The specific live profile's direct account-info route has not been verified from this development environment; the previously observed 1080 × 1080 third-party result is not evidence that anonymous DART requests can access the same metadata.
+
+
+### Experimental Spotify track matching (off by default)
+
+Enable only while testing:
+
+```bash
+DART_EXPERIMENTAL_SPOTIFY=1 python server.py
+```
+
+The Spotify tile and Music type appear only when enabled. Paste an `https://open.spotify.com/track/...` link. DART reads public track metadata (title, artists and duration), searches up to five YouTube results, and rejects suggestions with different titles, artists, duration or obvious cover/remix/live labels. Select a suggestion, inspect its source link, then download Original audio, MP3, M4A or WAV (conversion requires FFmpeg). Search ranking cannot guarantee the same recording; source availability and permission to download still apply. There is no Spotify audio extraction, DRM bypass, Spotify credential handling, or automatic substitute download. Playlists, albums and Spotify short links are outside this experiment.
+
+**Disable:** stop DART and run `unset DART_EXPERIMENTAL_SPOTIFY`, then `python server.py`. The experimental UI disappears and the API rejects Music requests. Existing downloader modes remain available.
+
+**Remove:** this addition is kept in a dedicated Git commit. Use `git revert <feature-commit>` to remove it while retaining later work; avoid a hard reset. The metadata/search logic is isolated in `spotify_match.py`. Controlled tests cover matching, rejection and the download API. Live Spotify metadata and a YouTube search returning matching suggestions were verified for a sample track during development. The development search used the environment’s trusted CA configuration; a full live song download and visual browser QA remain unverified.

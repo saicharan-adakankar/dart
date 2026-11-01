@@ -28,6 +28,7 @@
           <button type="button" class="platform-tile" data-platform="Facebook" aria-pressed="false"><span class="platform-icon facebook-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 22v-9h3l.5-4H14V7c0-1 .5-2 2-2h2V1h-3c-4 0-6 2-6 6v2H6v4h3v9Z"/></svg></span><span>Facebook</span></button>
           <button type="button" class="platform-tile" data-platform="X" aria-pressed="false"><span class="platform-icon x-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h4l12 18h-4ZM20 3 4 21"/></svg></span><span>X / Twitter</span></button>
           <button type="button" class="platform-tile" data-platform="Web" aria-pressed="false"><span class="platform-icon web-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg></span><span>Direct link</span></button>
+          <button type="button" id="spotify-tile" class="platform-tile" data-platform="Spotify" aria-pressed="false" hidden><span class="platform-icon spotify-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M6 9c4-2 9-1 12 1M7 12c3-1.5 7-1 10 1M8 15c2-1 5-.5 8 1"/></svg></span><span>Spotify · test</span></button>
         </div>
       </section>
       <section class="panel" aria-label="Download tool">
@@ -38,6 +39,7 @@
             <label class="type"><input type="radio" name="kind" value="photo"><span><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg>Photo</span></label>
             <label class="type"><input type="radio" name="kind" value="profile"><span><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span class="desktop-label">Profile picture</span><span class="mobile-label">Profile</span></span></label>
             <label class="type"><input type="radio" name="kind" value="file"><span><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6"/></svg>File</span></label>
+            <label class="type" id="music-type" hidden><input type="radio" name="kind" value="music"><span>Music · test</span></label>
           </fieldset>
           <label for="url" class="url-label">Paste your link</label>
           <div class="input-wrap"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 14 4-4m-6 6-1 1a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0m0 12a4 4 0 0 0 6 0l5-5a4 4 0 0 0-6-6l-1 1"/></svg><input id="url" type="url" placeholder="https://…" required maxlength="4096" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" aria-describedby="hint"><button type="button" id="clear" aria-label="Clear link" hidden>×</button></div>
@@ -45,6 +47,13 @@
           <button id="inspect" class="primary" type="submit"><span>Find video</span><span aria-hidden="true">↗</span></button>
         </form>
         <section id="result" hidden aria-label="Download result" tabindex="-1"><div class="result-top"><div class="file-mark" aria-hidden="true">↧</div><div class="result-text"><span id="result-source" class="result-source"></span><h2 id="title"></h2></div><button id="reset" class="text-button" type="button">New link</button></div>
+          <section id="music-matches" class="music-matches" hidden aria-labelledby="music-match-heading">
+            <h3 id="music-match-heading">Confirm the audio source</h3>
+            <p>Experimental matching uses Spotify track details to search YouTube. This is not Spotify audio. Check the recording before downloading; matching does not establish permission to download it.</p>
+            <a id="spotify-track-link" target="_blank" rel="noopener noreferrer">Track details on Spotify ↗</a>
+            <label for="music-match">Suggested recording</label><select id="music-match" required></select>
+            <a id="music-source-link" target="_blank" rel="noopener noreferrer">Open source on YouTube ↗</a>
+          </section>
           <div class="output-options"><div class="option-field" id="quality-row"><label for="quality">Quality</label><select id="quality"></select></div><div class="option-field"><label for="format">File format</label><select id="format" aria-describedby="format-note"></select></div></div>
           <p id="format-note" class="format-note" aria-live="polite"></p><p id="quality-note" class="subtle"></p>
           <button id="download" class="primary" type="button"><span>Prepare download</span><span aria-hidden="true">↓</span></button><a id="save" class="primary save" hidden>Save file <span aria-hidden="true">↓</span></a>

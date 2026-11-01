@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from proxy import start_proxy
+import spotify_match
 
 ROOT = Path(__file__).parent
 DATA = Path(os.environ.get('DART_DATA', str(ROOT / '.dart-data')))
@@ -421,10 +422,10 @@ def run_process(job, command, timeout=None):
         job.pop('process', None)
 
 
-def ytdlp(job, args, timeout):
+def ytdlp(job, args, timeout, url=None):
     command = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist', '--proxy', PROXY_URL,
                '--socket-timeout', '20', '--retries', '1', '--fragment-retries', '1', '--no-cache-dir',
-               '--js-runtimes', 'node', '--no-check-formats'] + args + ['--', job['url']]
+               '--js-runtimes', 'node', '--no-check-formats'] + args + ['--', url or job['url']]
     code, stdout, stderr = run_process(job, command, timeout)
     if code:
         if 'Unsupported URL' in stderr:
@@ -436,7 +437,9 @@ def ytdlp(job, args, timeout):
 def output_formats(kind):
     formats = ['original']
     if shutil.which('ffmpeg'):
-        if kind == 'video':
+        if kind == 'music':
+            formats += ['mp3', 'm4a', 'wav']
+        elif kind == 'video':
             formats += ['mp4', 'mkv', 'webm', 'mp3', 'm4a', 'wav']
         elif kind in ('photo', 'profile'):
             formats += ['png', 'jpg', 'webp']
@@ -490,7 +493,15 @@ def convert_file(job, path, name):
 def work(job, action):
     try:
         job.update(state='working', stage='inspecting' if action == 'inspect' else 'downloading')
-        if job['kind'] == 'video':
+        if job['kind'] in ('video', 'music'):
+            if job['kind'] == 'music' and action == 'inspect':
+                track, matches = spotify_match.inspect(job['url'], open_url,
+                    lambda target, args, timeout: ytdlp(job, args, timeout, url=target))
+                job.update(title=track['title'] + ' — ' + ', '.join(track['artists']),
+                           track=track, matches=matches, qualities=['best'],
+                           formats=output_formats('music'), state='ready', progress=0,
+                           platform='Spotify metadata · YouTube audio match')
+                return
             if action == 'inspect':
                 info = json.loads(ytdlp(job, ['--dump-single-json', '--skip-download', '--playlist-items', '1'], 80))
                 if info.get('is_live') or info.get('_type') in ('playlist', 'multi_video'):
@@ -506,9 +517,12 @@ def work(job, action):
             fmt = f'bv*{cap}{safe}+ba{safe}/b{cap}{safe}'
             if job.get('output_format') in ('mp3', 'm4a', 'wav'):
                 fmt = f'ba{safe}/b{safe}'
+            if job['kind'] == 'music':
+                fmt = f'ba{safe}'
             ytdlp(job, ['--format', fmt, '--downloader', 'native',
                        '--hls-prefer-native', '--no-progress', '--restrict-filenames', '--playlist-items', '1',
-                       '--output', str(job['dir'] / '%(title).100s.%(ext)s')], None)
+                       '--output', str(job['dir'] / '%(title).100s.%(ext)s')], None,
+                   **({'url': job['asset_url']} if job['kind'] == 'music' else {}))
             files = [p for p in job['dir'].iterdir() if p.is_file() and p.suffix not in ('.part', '.ytdl', '.temp')]
             if len(files) != 1:
                 raise ValueError('No complete file was produced. Try another source or quality.')
@@ -593,6 +607,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self.valid_host():
             return
         path = urllib.parse.urlsplit(self.path).path
+        if path == '/api/features':
+            self.reply({'spotify_matching': spotify_match.enabled()})
+            return
         if path == '/api/health':
             self.reply({'status': 'ok', 'extractor': bool(shutil.which('yt-dlp')), 'ffmpeg': bool(shutil.which('ffmpeg'))})
             return
@@ -618,7 +635,7 @@ class Handler(BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
-            self.reply({k: job[k] for k in ('id', 'state', 'stage', 'title', 'qualities', 'formats', 'progress', 'dimensions', 'error', 'platform', 'filename') if k in job})
+            self.reply({k: job[k] for k in ('id', 'state', 'stage', 'title', 'qualities', 'formats', 'progress', 'dimensions', 'error', 'platform', 'filename', 'track', 'matches', 'selected_match') if k in job})
             return
         asset = {'/': 'index.html', '/style.css': 'style.css', '/app.js': 'app.js', '/theme.js': 'theme.js', '/bat.svg': 'bat.svg'}.get(path)
         if not asset:
@@ -662,9 +679,13 @@ class Handler(BaseHTTPRequestHandler):
                     if len(JOBS) >= 64:
                         raise ValueError('Session capacity reached. Old downloads expire after one hour.')
                     kind = body.get('kind')
-                    if kind not in ('video', 'photo', 'profile', 'file'):
+                    if kind not in ('video', 'photo', 'profile', 'file', 'music'):
                         raise ValueError('Select a download type')
+                    if kind == 'music' and not spotify_match.enabled():
+                        raise ValueError('Spotify matching is disabled. Set DART_EXPERIMENTAL_SPOTIFY=1 to test it locally.')
                     url = validate_url(body.get('url'))
+                    if kind == 'music':
+                        spotify_match.track_id(url)
                     key = secrets.token_urlsafe(24)
                     directory = DATA / key
                     directory.mkdir(parents=True)
@@ -694,6 +715,14 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if job['state'] != 'ready':
                     raise ValueError('Inspect the link before downloading')
+                if job['kind'] == 'music':
+                    if not spotify_match.enabled():
+                        raise ValueError('Spotify matching has been disabled.')
+                    match = next((item for item in job['matches'] if item['id'] == body.get('match')), None)
+                    if not match:
+                        raise ValueError('Confirm one of the suggested audio sources before downloading.')
+                    job['asset_url'] = validate_url(match['url'])
+                    job['selected_match'] = match
                 quality = str(body.get('quality', 'best'))
                 if quality not in ['best', 'original'] + job.get('qualities', []):
                     raise ValueError('Select an available quality')
