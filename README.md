@@ -51,10 +51,10 @@ Downloads run on the server first. Files expire after one hour; restarting clear
 | --- | --- | --- |
 | Video | Real yt-dlp inspection and downloads; best available or resolution cap; FFmpeg merges source streams without re-encoding | Single, non-live videos. Source can require login, block bots, or change extraction. No DRM bypass, cookies, playlists, or universal compatibility. |
 | Photo | Direct raster images, or the main `og:image` / `twitter:image` exposed by a webpage | The page can provide a compressed preview. No carousel/gallery extraction yet. |
-| Profile picture | Direct avatar image URLs, or explicit `profile_pic_url_hd`, `profile_pic_url`, or `avatar_url` metadata in public HTML | Generic social-page preview images are deliberately not treated as avatars. Instagram, Facebook, and X often hide avatar data or require login; those links return an explanatory error. |
+| Profile picture | Direct avatars; account-matched Instagram hydration data and public profile-metadata fallback; explicit avatar fields, verified profile OG metadata, and ProfilePage schema | Private accounts are accepted when their avatar is publicly exposed. Generic page logos and avatars from suggested accounts are rejected. Platforms can block requests or require login; those failures cannot be bypassed. |
 | File | Streams direct HTTP/HTTPS file URLs to temporary storage, preserving bytes | A webpage is not a direct file. Expiring, signed, or authenticated links may fail. |
 
-YouTube, Instagram, Facebook, and X are recognized automatically. Their video support comes from yt-dlp; recognition is **not** a guarantee that every platform/mode combination works. No live social-platform downloads have been verified in the development environment. A generated video fixture is verified end-to-end with the actual extractor.
+YouTube, Instagram, Facebook, and X are recognized automatically. Their video support comes from yt-dlp; recognition is **not** a guarantee that every platform/mode combination works. No live social-platform downloads or avatar lookups have been verified in the development environment. A generated video fixture is verified end-to-end with the actual extractor.
 
 ### Output formats
 
@@ -78,7 +78,7 @@ DART imposes no file-size cap or overall download-duration limit. Available disk
 - `proxy.py`: loopback-only egress proxy used by direct fetches and yt-dlp. It resolves each destination, rejects any private/reserved DNS answers, and connects to the validated IP. Redirect requests are checked again. Only ports 80/443 are allowed. Native HTTP media download protocols are selected; FFmpeg is used for local merging.
 - `.github/workflows/checks.yml`: API/security tests, real generated-video extraction, JavaScript syntax validation, and Docker build.
 
-No uploaded cookies, platform credentials, custom extractor commands, external image requests from the frontend, or private-network fetching. Responses include a restrictive content security policy and no-store headers. Requests do not log submitted URLs or job identifiers.
+No uploaded cookies, platform credentials, custom extractor commands, external image requests from the frontend, or private-network fetching. Instagram avatar lookup uses public page data first, then one public metadata request; it does not access private posts or automatically retry blocks. Responses include a restrictive content security policy and no-store headers. Requests do not log submitted URLs or job identifiers.
 
 ## Deployment
 
@@ -111,3 +111,7 @@ Desktop dark/light themes, theme persistence, platform selection and link mismat
 ## Maintenance
 
 yt-dlp is pinned in `requirements.txt` for reproducibility. Platform changes may require a reviewed version update and a container rebuild. See the [yt-dlp documentation](https://github.com/yt-dlp/yt-dlp#readme) for source compatibility and JavaScript-runtime requirements.
+
+### Profile picture lookup
+
+Instagram profile links are parsed as account identities (post/Reel URLs are rejected). The resolver prefers high-resolution avatar fields belonging to that username, including nested and JSON-encoded page data. A private-account flag alone does not prevent retrieval of an avatar the platform returns publicly. If the page lacks the avatar, DART tries the public profile-metadata endpoint once. It does not use third-party lookup services, logins, or cookies. The endpoint is unofficial and may change, throttle requests, or require login. Controlled fixtures verify both private/public flags and identity matching; successful retrieval for every live profile is not guaranteed.

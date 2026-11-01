@@ -329,6 +329,69 @@ class DartTests(unittest.TestCase):
         self.assertIn(b'dart-theme',data)
         self.assertIn('javascript',headers['Content-Type'])
 
+    def profile_response(self, body, url, content_type='text/html'):
+        response = io.BytesIO(body.encode())
+        response.url = url
+        response.headers = server.email.message.Message()
+        response.headers['Content-Type'] = content_type
+        return response
+
+    def test_private_and_public_instagram_avatars(self):
+        url = 'https://www.instagram.com/example/'
+        for private in (True,False):
+            with self.subTest(private=private):
+                data = {'require':[{'user':{'username':'example','is_private':private,
+                        'profile_pic_url':'https://images.test/small.jpg',
+                        'profile_pic_url_hd':'https://images.test/large.jpg'}}],
+                        'suggested':{'username':'someone_else','profile_pic_url_hd':'https://images.test/wrong.jpg'}}
+                body = '<script type="application/json">'+json.dumps(data)+'</script>'
+                with patch('server.open_url',return_value=self.profile_response(body,url)) as opened:
+                    avatar, title = server.image_link(url,profile=True)
+                self.assertEqual(avatar,'https://images.test/large.jpg')
+                self.assertIn('@example',title)
+                opened.assert_called_once_with(url)
+
+    def test_encoded_profile_data(self):
+        data = {'username':'example','profile_pic_url_hd':'https://images.test/large.jpg'}
+        body = '<script type="application/json">'+json.dumps({'payload':json.dumps(data)})+'</script>'
+        parser = server.Metadata()
+        parser.feed(body)
+        self.assertEqual(server.profile_image(body,parser,'https://www.instagram.com/example/','example'),data['profile_pic_url_hd'])
+
+    def test_instagram_api_fallback(self):
+        url = 'https://www.instagram.com/example/'
+        page = '<title>Sign in to Instagram</title>'
+        api = json.dumps({'data':{'user':{'username':'example','is_private':True,'profile_pic_url_hd':'https://images.test/avatar.jpg'}}})
+        with patch('server.open_url',side_effect=[self.profile_response(page,url),self.profile_response(api,url,'application/json')]) as opened:
+            avatar, _ = server.image_link(url,profile=True)
+        self.assertEqual(avatar,'https://images.test/avatar.jpg')
+        self.assertIn('username=example',opened.call_args_list[1].args[0])
+
+    def test_instagram_api_identity_mismatch(self):
+        api = json.dumps({'data':{'user':{'username':'wrong','profile_pic_url':'https://images.test/wrong.jpg'}}})
+        with patch('server.open_url',return_value=self.profile_response(api,'https://www.instagram.com/','application/json')):
+            self.assertIsNone(server.instagram_api_avatar('example'))
+
+    def test_instagram_rejects_post_as_profile(self):
+        for path in ('p/123','reel/123','accounts/login','explore','example/tagged'):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError,'profile link'):
+                server.instagram_username('https://www.instagram.com/'+path)
+
+    def test_verified_profile_og_image(self):
+        url = 'https://www.instagram.com/example/'
+        body = '<meta property="og:type" content="profile"><meta property="og:url" content="'+url+'"><meta property="og:image" content="https://images.test/avatar.jpg">'
+        parser = server.Metadata()
+        parser.feed(body)
+        self.assertEqual(server.profile_image(body,parser,url,'example'),'https://images.test/avatar.jpg')
+        self.assertIsNone(server.profile_image(body,parser,url,'different'))
+
+    def test_profile_schema_main_entity(self):
+        data = {'@type':'ProfilePage','mainEntity':{'@type':'Person','image':{'contentUrl':'https://images.test/person.png'}}}
+        body = '<script type="application/ld+json">'+json.dumps(data)+'</script>'
+        parser = server.Metadata()
+        parser.feed(body)
+        self.assertEqual(server.profile_image(body,parser,'https://source.test/person'),'https://images.test/person.png')
+
 
 if __name__ == '__main__':
     unittest.main()

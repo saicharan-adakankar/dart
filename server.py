@@ -3,6 +3,7 @@ import collections
 import concurrent.futures
 import email.message
 import html.parser
+import html
 import ipaddress
 import json
 import mimetypes
@@ -62,10 +63,10 @@ class PublicOpener(urllib.request.ProxyHandler):
         return self.parent.open(req, timeout=req.timeout) if type != req.type else None
 
 
-def open_url(url):
+def open_url(url, headers=None):
     validate_url(url)
     opener = urllib.request.build_opener(PublicOpener({'http': PROXY_URL, 'https': PROXY_URL}))
-    return opener.open(urllib.request.Request(url, headers={'User-Agent': 'DART/1.0'}), timeout=25)
+    return opener.open(urllib.request.Request(url, headers={'User-Agent': 'DART/1.0', **(headers or {})}), timeout=25)
 
 
 def fetch_file(url, dest, job, image=False):
@@ -106,15 +107,135 @@ class Metadata(html.parser.HTMLParser):
     def __init__(self):
         super().__init__()
         self.tags = {}
+        self.scripts = []
+        self._script = None
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         if tag == 'meta':
             self.tags[a.get('property') or a.get('name')] = a.get('content', '')
+        elif tag == 'script':
+            self._script = []
+
+    def handle_data(self, data):
+        if self._script is not None:
+            self._script.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == 'script' and self._script is not None:
+            self.scripts.append(''.join(self._script))
+            self._script = None
+
+
+def instagram_username(url):
+    if platform(url) != 'Instagram':
+        return None
+    parts = urllib.parse.urlsplit(url).path.strip('/').split('/')
+    reserved = {'p', 'reel', 'reels', 'stories', 'explore', 'accounts', 'direct', 'about', 'developer', 'api', 'challenge'}
+    if (not parts or len(parts) > 2 or (len(parts) == 2 and parts[1] != 'avatar')
+            or parts[0].lower() in reserved or not re.fullmatch(r'[A-Za-z0-9_.]{1,30}', parts[0])):
+        raise ValueError('Use an Instagram profile link such as https://www.instagram.com/username/, rather than a post or Reel.')
+    return parts[0].lower()
+
+
+def json_nodes(scripts):
+    """Decode structured and JSON-encoded hydration data, with bounded traversal."""
+    stack = []
+    decoder = json.JSONDecoder()
+    for script in scripts:
+        candidate = html.unescape(script).strip().removeprefix('window._sharedData =').strip()
+        try:
+            stack.append(decoder.raw_decode(candidate)[0])
+        except (ValueError, RecursionError):
+            continue
+    count = 0
+    while stack and count < 20000:
+        node = stack.pop()
+        count += 1
+        if isinstance(node, dict):
+            yield node
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(reversed(node))
+        elif isinstance(node, str) and node.startswith(('{', '[')):
+            try:
+                stack.append(json.loads(node))
+            except (ValueError, RecursionError):
+                pass
+
+
+def avatar_field(node):
+    for key in ('profile_pic_url_hd', 'profile_pic_url', 'avatar_url', 'profile_image_url_https'):
+        if isinstance(node.get(key), str) and node[key]:
+            return node[key]
+    for key in ('hd_profile_pic_url_info', 'profile_picture', 'profilePicture'):
+        value = node.get(key)
+        if isinstance(value, dict) and isinstance(value.get('url') or value.get('uri'), str):
+            return value.get('url') or value['uri']
+    return None
+
+
+def instagram_api_avatar(username):
+    # Public profile metadata only. No cookies, credentials, or access-control bypass.
+    endpoint = 'https://www.instagram.com/api/v1/users/web_profile_info/?' + urllib.parse.urlencode({'username': username})
+    try:
+        with open_url(endpoint, {'Accept': 'application/json', 'X-IG-App-ID': '936619743392459'}) as response:
+            data = json.loads(response.read(2 * 1024 * 1024))
+        user = (data.get('data') or {}).get('user') or {}
+        if str(user.get('username', '')).lower() == username:
+            return avatar_field(user)
+    except (OSError, ValueError, AttributeError, RecursionError):
+        pass
+    return None
+
+
+def profile_image(content, parser, url, username=None):
+    nodes = list(json_nodes(parser.scripts))
+    for node in nodes:
+        # A profile's private flag does not hide an avatar that is publicly returned.
+        # Match identity so suggested accounts cannot supply the wrong person's avatar.
+        if username is not None and str(node.get('username', '')).lower() != username:
+            continue
+        value = avatar_field(node)
+        if value:
+            return value
+    if username is None:
+        for node in nodes:
+            if node.get('@type') == 'ProfilePage' and isinstance(node.get('mainEntity'), dict):
+                person = node['mainEntity']
+                image = person.get('image')
+                if person.get('@type') in ('Person', 'Organization'):
+                    if isinstance(image, str):
+                        return image
+                    if isinstance(image, dict):
+                        return image.get('contentUrl') or image.get('url')
+        # Legacy non-JSON script assignments still expose explicit avatar fields.
+        match = re.search(r'"(?:profile_pic_url_hd|profile_pic_url|avatar_url)"\s*:\s*("(?:[^"\\]|\\.)*")', html.unescape(content))
+        if match:
+            return json.loads(match.group(1))
+    # Only use OG images when the page explicitly describes the requested profile.
+    if parser.tags.get('og:type') == 'profile':
+        canonical = parser.tags.get('og:url')
+        if canonical and urllib.parse.urlsplit(canonical).hostname == urllib.parse.urlsplit(url).hostname:
+            canonical_path = urllib.parse.urlsplit(canonical).path.strip('/').lower()
+            requested_path = username or urllib.parse.urlsplit(url).path.strip('/').lower()
+            if canonical_path == requested_path:
+                return parser.tags.get('og:image:secure_url') or parser.tags.get('og:image')
+    return None
 
 
 def image_link(url, profile=False):
-    with open_url(url) as response:
+    username = instagram_username(url) if profile else None
+    try:
+        response = open_url(url)
+    except (OSError, ValueError):
+        if username:
+            avatar = instagram_api_avatar(username)
+            if avatar:
+                return validate_url(avatar), '@' + username + ' · profile picture'
+        raise ValueError('The platform did not allow DART to read this profile. Its public avatar may require a logged-in session or be temporarily blocked.'
+                         if profile else 'The image source could not be reached. Check the link and try again.')
+    with response:
         if response.headers.get_content_type().startswith('image/'):
             return url, 'Source image'
         if response.headers.get_content_type() not in ('text/html', 'application/xhtml+xml'):
@@ -123,11 +244,12 @@ def image_link(url, profile=False):
         parser = Metadata()
         parser.feed(content)
         if profile:
-            # Use explicit avatar metadata; never mistake a generic OG/logo image for an avatar.
-            match = re.search(r'"(?:profile_pic_url_hd|profile_pic_url|avatar_url)"\s*:\s*("(?:[^"\\]|\\.)*")', content)
-            if not match:
-                raise ValueError('This profile does not expose a public avatar URL. Try its direct profile-image link; login-only profiles are unavailable.')
-            return validate_url(urllib.parse.urljoin(response.url, json.loads(match.group(1)))), 'Public profile image'
+            avatar = profile_image(content, parser, response.url, username)
+            if not avatar and username:
+                avatar = instagram_api_avatar(username)
+            if not avatar:
+                raise ValueError('The platform did not return a publicly accessible avatar for this profile. A private profile can work when its avatar is public; a login requirement or platform block cannot be bypassed. You can also use the direct avatar image link.')
+            return validate_url(urllib.parse.urljoin(response.url, avatar)), ('@' + username + ' · profile picture') if username else 'Public profile image'
         image = parser.tags.get('og:image:secure_url') or parser.tags.get('og:image') or parser.tags.get('twitter:image')
         if not image:
             raise ValueError('No public image was found. Try a direct image URL.')

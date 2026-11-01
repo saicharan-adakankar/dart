@@ -47,7 +47,7 @@ function syncHints() {
   $('url').placeholder = name ? `Paste a ${name} ${noun} link` : kind()==='file' ? 'Paste a direct file URL' : `Paste a ${noun} link`;
   $('panel-title').textContent = name ? `${name} downloader` : 'Your next download';
   $('inspect').firstElementChild.textContent = `Find my ${noun}`;
-  $('hint').textContent = kind()==='profile' ? 'Public avatar metadata or a direct avatar image URL.' : kind()==='file' ? 'Use a direct file URL, rather than a webpage.' : 'Public links only. We’ll detect the source.';
+  $('hint').textContent = kind()==='profile' ? 'Publicly visible avatars, including on private accounts.' : kind()==='file' ? 'Use a direct file URL, rather than a webpage.' : 'Public links only. We’ll detect the source.';
 }
 async function api(path,body) {
   const response = await fetch(path,body===undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
