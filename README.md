@@ -2,9 +2,9 @@
 
 **Download And Retrieve Tool** · One link. Within reach.
 
-A minimal, bat-themed web downloader with a charcoal/violet interface and a real Python download backend. No frontend build step, account, analytics, or API key required.
+A minimal, bat-themed web downloader with a pitch-black/violet dark theme, a light theme, interactive platform tiles, format selection and a real Python download backend. No frontend build step, account, analytics, or API key required.
 
-## Run with Docker
+## Run with Docker (optional)
 
 Install Docker Desktop (or Docker Engine with Compose), then:
 
@@ -38,8 +38,10 @@ Open http://localhost:8000. Video extraction uses a POSIX process group for canc
 
 1. Choose **Video**, **Photo**, **Profile picture**, or **File**.
 2. Paste a public link and select **Find**.
-3. Review the detected source, file title, and available video resolutions.
+3. Review the detected source and file title, then choose a quality and output format. Platform tiles select the source; Auto detects it from your link.
 4. Select **Prepare download**, then **Save file** when ready.
+
+Use the header theme button to switch between pitch-black dark mode and light mode. DART remembers your choice in your browser. Phone portrait uses a three-column platform grid and full-width controls; phone landscape uses a compact side-by-side layout, with larger touch inputs and safe-area padding.
 
 Downloads run on the server first. Files expire after one hour; restarting clears abandoned download directories. Cancel or select **New link** to discard a job. Job IDs are unguessable access links: treat them as private.
 
@@ -54,13 +56,24 @@ Downloads run on the server first. Files expire after one hour; restarting clear
 
 YouTube, Instagram, Facebook, and X are recognized automatically. Their video support comes from yt-dlp; recognition is **not** a guarantee that every platform/mode combination works. No live social-platform downloads have been verified in the development environment. A generated video fixture is verified end-to-end with the actual extractor.
 
-DART does not upscale media or recover quality removed by a source. Container and codec depend on available formats. Photo/profile bytes are not recompressed. Download only content you own or have permission to save.
+### Output formats
+
+| Content | Choices | Behavior |
+| --- | --- | --- |
+| Video | Original, MP4, MKV, WebM | Original preserves downloaded source streams. MKV remuxes without re-encoding. MP4 converts to H.264/AAC; WebM converts to VP9/Opus. |
+| Audio from video | MP3, M4A, WAV | Downloads an audio-only source when available, then converts. MP3 uses high-quality VBR, M4A uses 256 kbps AAC, WAV uses uncompressed 16-bit PCM. Video resolution selection is hidden for audio outputs. |
+| Photo / profile picture | Original, PNG, JPEG, WebP | Original preserves bytes. Conversion supports PNG/JPEG/WebP inputs, uses the first frame, and retains source dimensions. JPEG drops transparency; WebP uses lossless encoding. Other image types require Original. |
+| General files | Original | No arbitrary document/archive/file conversion. |
+
+Conversion choices require FFmpeg. If it is missing, only Original is offered. Known silent video sources do not offer audio formats; sources with unknown codecs may still offer audio, with an error if no audio stream exists. Some source containers/codecs may not be convertible. DART explains conversion failures rather than changing a filename extension without converting the contents.
+
+DART does not upscale media or recover quality removed by a source. Re-encoding can alter quality and take significant time; Original and MKV avoid re-encoding. MP4 may pad odd dimensions by one pixel for codec compatibility. Conversion is cancellable and has no overall duration or file-size cap. Download only content you own or have permission to save.
 
 DART imposes no file-size cap or overall download-duration limit. Available disk space and source restrictions still apply; video merging needs additional temporary space. Network inactivity timeouts remain to detect stalled connections. Other limits: two active workers, four admitted operations, 64 retained jobs, 30 mutation requests/minute/client, and an 80-second video-inspection timeout. Completed and inactive jobs expire after one hour; active downloads are not expired.
 
 ## Architecture
 
-- `web/`: responsive vanilla HTML/CSS/JavaScript; accessible radio selector, validation, status, cancellation, and explicit save link.
+- `web/`: responsive vanilla HTML/CSS/JavaScript; interactive platform buttons, persistent themes, portrait/landscape layouts, quality/format selection, validation, status, cancellation, and explicit save link.
 - `server.py`: standard-library threaded HTTP service, bounded worker pool, in-memory job state, safe file serving, and expiry cleanup.
 - `proxy.py`: loopback-only egress proxy used by direct fetches and yt-dlp. It resolves each destination, rejects any private/reserved DNS answers, and connects to the validated IP. Redirect requests are checked again. Only ports 80/443 are allowed. Native HTTP media download protocols are selected; FFmpeg is used for local merging.
 - `.github/workflows/checks.yml`: API/security tests, real generated-video extraction, JavaScript syntax validation, and Docker build.
@@ -93,7 +106,7 @@ node --check web/app.js
 
 Tests use controlled local fixtures through the network guard; they do not need social accounts. They cover exact-byte file downloads, photo metadata, explicit avatars, generic-avatar rejection, private redirects, mixed public/private DNS answers, pinned-IP connections, Host validation, cancellation, traversal, and the real yt-dlp video pipeline.
 
-Browser visual QA and a local Docker build were unavailable in the development environment. CI performs the Docker build; inspect its result before relying on that packaging.
+Desktop dark/light themes, theme persistence, platform selection and link mismatch handling were checked in the browser. Static frontend snapshots were visually checked in 390 × 844 portrait and 844 × 390 landscape frames; actual device testing remains recommended. Backend API tests cover real image/video/audio conversions and codec verification. A local Docker build was unavailable; CI performs the build.
 
 ## Maintenance
 

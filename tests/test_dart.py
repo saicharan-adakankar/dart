@@ -18,6 +18,7 @@ import server
 
 class Source(BaseHTTPRequestHandler):
     video = b''
+    image = b'\x89PNG\r\n\x1a\nEXAMPLE'
     def log_message(self, *_):
         pass
 
@@ -37,7 +38,7 @@ class Source(BaseHTTPRequestHandler):
             payload = b'<script>{"profile_pic_url_hd":"http://source.test/image.png"}</script>'
             mime = 'text/html'
         elif self.path == '/image.png':
-            payload = b'\x89PNG\r\n\x1a\nEXAMPLE'
+            payload = self.image
             mime = 'image/png'
         else:
             payload = b'DART integration fixture\n'
@@ -50,6 +51,10 @@ class Source(BaseHTTPRequestHandler):
 
 
 class DartTests(unittest.TestCase):
+    def setUp(self):
+        # Keep test cases independent of the real per-client mutation rate limit.
+        server.REQUESTS.clear()
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
@@ -212,6 +217,117 @@ class DartTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.request('/',headers={'Host':'attacker.test'})
         self.assertEqual(caught.exception.code,403)
+
+    def media_fixture(self, image=False):
+        import shutil
+        if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
+            self.skipTest('FFmpeg and FFprobe are required for format verification')
+        target = Path(self.tmp.name) / ('real.png' if image else 'real.mp4')
+        if image:
+            args = ['-f','lavfi','-i','color=c=red:s=32x32','-frames:v','1']
+        else:
+            args = ['-f','lavfi','-i','color=c=blue:s=32x32:r=2:d=1','-f','lavfi','-i',
+                    'sine=frequency=440:duration=1','-c:v','libx264','-c:a','aac','-shortest']
+        subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-y']+args+['-threads','1',str(target)],check=True,capture_output=True)
+        return target
+
+    def probe(self, path):
+        result = subprocess.run(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(path)],check=True,capture_output=True,text=True)
+        return json.loads(result.stdout)
+
+    def test_video_and_audio_conversion_codecs(self):
+        source = self.media_fixture()
+        expected = {'mp4':('h264','aac'),'mkv':('h264','aac'),'webm':('vp9','opus'),
+                    'mp3':(None,'mp3'),'m4a':(None,'aac'),'wav':(None,'pcm_s16le')}
+        for fmt, codecs in expected.items():
+            with self.subTest(format=fmt), tempfile.TemporaryDirectory(dir=self.tmp.name) as directory:
+                path = Path(directory)/'source.mp4'
+                path.write_bytes(source.read_bytes())
+                job = {'dir':Path(directory),'kind':'video','output_format':fmt}
+                output, name = server.convert_file(job,path,'example.mp4')
+                streams = self.probe(output)['streams']
+                video = next((s['codec_name'] for s in streams if s['codec_type']=='video'),None)
+                audio = next((s['codec_name'] for s in streams if s['codec_type']=='audio'),None)
+                self.assertEqual((video,audio),codecs)
+                self.assertEqual(name,'example.'+fmt)
+                self.assertFalse(path.exists())
+
+    def test_image_conversion_signatures_and_dimensions(self):
+        source = self.media_fixture(image=True)
+        for fmt in ('png','jpg','webp'):
+            with self.subTest(format=fmt), tempfile.TemporaryDirectory(dir=self.tmp.name) as directory:
+                path = Path(directory)/'source.png'
+                path.write_bytes(source.read_bytes())
+                job = {'dir':Path(directory),'kind':'photo','output_format':fmt}
+                output, name = server.convert_file(job,path,'example.png')
+                stream = self.probe(output)['streams'][0]
+                self.assertEqual((stream['width'],stream['height']),(32,32))
+                self.assertEqual(name,'example.'+fmt)
+                self.assertTrue(output.stat().st_size)
+
+    def test_image_format_api_roundtrip(self):
+        source = self.media_fixture(image=True)
+        previous = Source.image
+        Source.image = source.read_bytes()
+        try:
+            key, job = self.inspect('photo','http://source.test/page')
+            self.assertIn('jpg',job['formats'])
+            self.request(f'/api/jobs/{key}/download',{'quality':'original','format':'jpg'})
+            job = self.wait(key)
+            self.assertEqual(job['state'],'done',job)
+            payload, headers = self.request(f'/api/jobs/{key}/file')
+            self.assertTrue(payload.startswith(b'\xff\xd8\xff'))
+            self.assertIn('.jpg',headers['Content-Disposition'])
+        finally:
+            Source.image = previous
+
+    def test_video_to_audio_api_roundtrip(self):
+        source = self.media_fixture()
+        Source.video = source.read_bytes()
+        key, job = self.inspect('video','http://source.test/video.mp4')
+        self.assertIn('mp3',job['formats'])
+        self.request(f'/api/jobs/{key}/download',{'quality':'best','format':'mp3'})
+        job = self.wait(key)
+        self.assertEqual(job['state'],'done',job)
+        self.assertTrue(job['filename'].endswith('.mp3'))
+        streams = self.probe(server.JOBS[key]['path'])['streams']
+        self.assertEqual([s['codec_type'] for s in streams],['audio'])
+
+    def test_format_rejected_for_general_file(self):
+        key, job = self.inspect('file','http://source.test/file.bin')
+        self.assertEqual(job['formats'],['original'])
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.request(f'/api/jobs/{key}/download',{'quality':'original','format':'mp4'})
+        self.assertEqual(caught.exception.code,400)
+        self.assertEqual(self.wait(key)['state'],'ready')
+
+    def test_missing_ffmpeg_only_offers_original(self):
+        with patch('server.shutil.which',return_value=None):
+            self.assertEqual(server.output_formats('video'),['original'])
+            self.assertEqual(server.output_formats('photo'),['original'])
+
+    def test_conversion_cancellation(self):
+        job = {}
+        timer = threading.Timer(.1,lambda:job.update(cancelled=True))
+        timer.start()
+        try:
+            with self.assertRaisesRegex(ValueError,'cancelled'):
+                server.run_process(job,[sys.executable,'-c','import time; time.sleep(20)'])
+            self.assertNotIn('process',job)
+        finally:
+            timer.cancel()
+
+    def test_invalid_image_is_not_decoded(self):
+        with tempfile.TemporaryDirectory(dir=self.tmp.name) as directory:
+            path = Path(directory)/'fake.png'
+            path.write_text('not an image')
+            with self.assertRaisesRegex(ValueError,'supports PNG'):
+                server.convert_file({'dir':Path(directory),'kind':'photo','output_format':'png'},path,'fake.png')
+
+    def test_theme_script_served_under_csp(self):
+        data, headers = self.request('/theme.js')
+        self.assertIn(b'dart-theme',data)
+        self.assertIn('javascript',headers['Content-Type'])
 
 
 if __name__ == '__main__':

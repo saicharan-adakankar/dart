@@ -134,11 +134,8 @@ def image_link(url, profile=False):
         return validate_url(urllib.parse.urljoin(response.url, image)), parser.tags.get('og:title') or 'Page image'
 
 
-def ytdlp(job, args, timeout):
-    command = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist', '--proxy', PROXY_URL,
-               '--socket-timeout', '20', '--retries', '1', '--fragment-retries', '1', '--no-cache-dir',
-               '--js-runtimes', 'node', '--no-check-formats'] + args + ['--', job['url']]
-    # Process group includes any local FFmpeg merger. All source requests use the guarded proxy.
+def run_process(job, command, timeout=None):
+    # Kill the entire process group on cancellation, including local FFmpeg children.
     proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
     job['process'] = proc
     deadline = time.monotonic() + timeout if timeout is not None else None
@@ -153,12 +150,7 @@ def ytdlp(job, args, timeout):
                 break
             except subprocess.TimeoutExpired:
                 continue
-        if proc.returncode:
-            # Do not return verbose extractor diagnostics, signed URLs, or filesystem paths.
-            if 'Unsupported URL' in stderr:
-                raise ValueError('This link is not supported by the video extractor. Try a direct file link.')
-            raise ValueError('The source could not provide this video. It may require login, restrict automated access, or be unavailable.')
-        return stdout
+        return proc.returncode, stdout, stderr
     finally:
         if proc.poll() is None:
             os.killpg(proc.pid, signal.SIGKILL)
@@ -166,21 +158,91 @@ def ytdlp(job, args, timeout):
         job.pop('process', None)
 
 
+def ytdlp(job, args, timeout):
+    command = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist', '--proxy', PROXY_URL,
+               '--socket-timeout', '20', '--retries', '1', '--fragment-retries', '1', '--no-cache-dir',
+               '--js-runtimes', 'node', '--no-check-formats'] + args + ['--', job['url']]
+    code, stdout, stderr = run_process(job, command, timeout)
+    if code:
+        if 'Unsupported URL' in stderr:
+            raise ValueError('This link is not supported by the video extractor. Try a direct file link.')
+        raise ValueError('The source could not provide this video. It may require login, restrict automated access, or be unavailable.')
+    return stdout
+
+
+def output_formats(kind):
+    formats = ['original']
+    if shutil.which('ffmpeg'):
+        if kind == 'video':
+            formats += ['mp4', 'mkv', 'webm', 'mp3', 'm4a', 'wav']
+        elif kind in ('photo', 'profile'):
+            formats += ['png', 'jpg', 'webp']
+    return formats
+
+
+def convert_file(job, path, name):
+    fmt = job.get('output_format', 'original')
+    if fmt == 'original':
+        return path, name
+    job.update(stage='converting', progress=None)
+    conversion_dir = job['dir'] / 'output'
+    conversion_dir.mkdir(exist_ok=True)
+    output = conversion_dir / ('converted.' + fmt)
+    # Decode only local media; disable network protocols and playlist demuxers.
+    inputs = ['-protocol_whitelist', 'file,pipe']
+    if job['kind'] in ('photo', 'profile'):
+        with path.open('rb') as f:
+            magic = f.read(12)
+        decoder = ('png' if magic.startswith(b'\x89PNG\r\n\x1a\n') else 'mjpeg' if magic.startswith(b'\xff\xd8\xff')
+                   else 'webp' if magic.startswith(b'RIFF') and magic[8:12] == b'WEBP' else None)
+        if not decoder:
+            raise ValueError('Image conversion supports PNG, JPEG and WebP sources. Use Original for other image types.')
+        inputs += ['-f', 'image2pipe', '-c:v', decoder]
+        options = ['-frames:v', '1']
+        if fmt == 'jpg':
+            options += ['-q:v', '2', '-pix_fmt', 'yuvj444p']
+        elif fmt == 'webp':
+            options += ['-c:v', 'libwebp', '-lossless', '1']
+    else:
+        inputs += ['-format_whitelist', 'mov,matroska,webm,avi,mpegts,flv,ogg,mp3,aac,wav']
+        if fmt in ('mp3', 'm4a', 'wav'):
+            codec = {'mp3':['libmp3lame','-q:a','0'], 'm4a':['aac','-b:a','256k'], 'wav':['pcm_s16le']}[fmt]
+            options = ['-map', '0:a:0', '-vn', '-c:a'] + codec
+        elif fmt == 'mkv':
+            options = ['-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy']
+        elif fmt == 'mp4':
+            options = ['-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+                       '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '256k', '-movflags', '+faststart']
+        else:
+            options = ['-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'libvpx-vp9', '-crf', '24', '-b:v', '0',
+                       '-deadline', 'good', '-cpu-used', '4', '-c:a', 'libopus', '-b:a', '192k']
+    command = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y'] + inputs + ['-i', str(path)] + options + ['-threads', '2', str(output)]
+    code, _, _ = run_process(job, command)
+    if code or not output.is_file() or not output.stat().st_size:
+        raise ValueError('This source could not be converted to the selected format. Try Original; audio formats require a source with audio.')
+    path.unlink()
+    return output, Path(name).stem + '.' + fmt
+
+
 def work(job, action):
     try:
-        job['state'] = 'working'
+        job.update(state='working', stage='inspecting' if action == 'inspect' else 'downloading')
         if job['kind'] == 'video':
             if action == 'inspect':
                 info = json.loads(ytdlp(job, ['--dump-single-json', '--skip-download', '--playlist-items', '1'], 80))
                 if info.get('is_live') or info.get('_type') in ('playlist', 'multi_video'):
                     raise ValueError('Use a single, non-live video link')
                 heights = sorted({f['height'] for f in info.get('formats', []) if isinstance(f.get('height'), int) and f.get('vcodec') != 'none'}, reverse=True)
-                job.update(title=str(info.get('title') or 'Video')[:200], qualities=[str(h) for h in heights], state='ready', progress=0)
+                has_audio = any(f.get('acodec') != 'none' for f in info.get('formats', []))
+                formats = [f for f in output_formats('video') if has_audio or f not in ('mp3', 'm4a', 'wav')]
+                job.update(title=str(info.get('title') or 'Video')[:200], qualities=[str(h) for h in heights], formats=formats, state='ready', progress=0)
                 return
             quality = job.get('quality', 'best')
             safe = '[protocol~="^(https?|m3u8_native|http_dash_segments)$"]'
             cap = '' if quality == 'best' else f'[height<={quality}]'
             fmt = f'bv*{cap}{safe}+ba{safe}/b{cap}{safe}'
+            if job.get('output_format') in ('mp3', 'm4a', 'wav'):
+                fmt = f'ba{safe}/b{safe}'
             ytdlp(job, ['--format', fmt, '--downloader', 'native',
                        '--hls-prefer-native', '--no-progress', '--restrict-filenames', '--playlist-items', '1',
                        '--output', str(job['dir'] / '%(title).100s.%(ext)s')], None)
@@ -188,7 +250,7 @@ def work(job, action):
             if len(files) != 1:
                 raise ValueError('No complete file was produced. Try another source or quality.')
             path = files[0]
-            job.update(path=path, filename=path.name, content_type=mimetypes.guess_type(path.name)[0] or 'application/octet-stream')
+            name = path.name
         else:
             if action == 'inspect':
                 if job['kind'] in ('photo', 'profile'):
@@ -196,11 +258,11 @@ def work(job, action):
                 else:
                     job['asset_url'] = job['url']
                     job['title'] = Path(urllib.parse.urlsplit(job['url']).path).name or 'Linked file'
-                job.update(state='ready', qualities=['original'], progress=0)
+                job.update(state='ready', qualities=['original'], formats=output_formats(job['kind']), progress=0)
                 return
             path, name, kind = fetch_file(job['asset_url'], job['dir'], job, job['kind'] in ('photo', 'profile'))
-            job.update(path=path, filename=name, content_type=kind)
-        job.update(state='done', progress=100)
+        path, name = convert_file(job, path, name)
+        job.update(path=path, filename=name, content_type=mimetypes.guess_type(name)[0] or 'application/octet-stream', state='done', stage='done', progress=100)
     except Exception as e:
         job.update(state='cancelled' if job.get('cancelled') else 'error', error=str(e) if isinstance(e, ValueError) else 'The source could not be reached. Check the link and try again.')
         shutil.rmtree(job['dir'], ignore_errors=True)
@@ -287,9 +349,9 @@ class Handler(BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
-            self.reply({k: job[k] for k in ('id', 'state', 'title', 'qualities', 'progress', 'error', 'platform', 'filename') if k in job})
+            self.reply({k: job[k] for k in ('id', 'state', 'stage', 'title', 'qualities', 'formats', 'progress', 'error', 'platform', 'filename') if k in job})
             return
-        asset = {'/': 'index.html', '/style.css': 'style.css', '/app.js': 'app.js', '/bat.svg': 'bat.svg'}.get(path)
+        asset = {'/': 'index.html', '/style.css': 'style.css', '/app.js': 'app.js', '/theme.js': 'theme.js', '/bat.svg': 'bat.svg'}.get(path)
         if not asset:
             self.send_error(404)
             return
@@ -369,6 +431,10 @@ class Handler(BaseHTTPRequestHandler):
                 if job['kind'] == 'video' and quality == 'original':
                     raise ValueError('Select a video quality')
                 job['quality'] = quality
+                output_format = body.get('format', 'original')
+                if not isinstance(output_format, str) or output_format not in job.get('formats', ['original']):
+                    raise ValueError('Select an available output format')
+                job['output_format'] = output_format
                 job['created'] = now
                 schedule(job, 'download')
                 self.reply({'id': job['id']}, 202)
