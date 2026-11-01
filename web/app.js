@@ -110,7 +110,8 @@ async function poll(token) {
       $('quality').disabled=true; $('format').disabled=true;
       $('save').href=`/api/jobs/${jobId}/file`; $('save').download=job.filename;
       $('save').firstChild.textContent=`Save ${job.filename.split('.').pop().toUpperCase()} file `;
-      message('Ready. Your file is within reach.',100); $('cancel').hidden=true;
+      message(job.dimensions ? `Ready · ${job.dimensions[0]} × ${job.dimensions[1]} pixels. Save your image below.` : 'Ready. Your file is within reach.',100);
+      if(kind()==='profile' && job.dimensions) $('quality-note').textContent=`Downloaded image: ${job.dimensions[0]} × ${job.dimensions[1]} pixels. No artificial upscaling applied.`; $('cancel').hidden=true;
       $('save').focus(); return;
     }
     const text=job.state==='queued' ? 'Queued. Your file is up next…' : job.stage==='converting' ? 'Converting to your chosen format…' : $('result').hidden ? 'Finding available media…' : 'Retrieving your file…';

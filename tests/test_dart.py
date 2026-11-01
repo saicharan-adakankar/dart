@@ -345,7 +345,7 @@ class DartTests(unittest.TestCase):
                         'profile_pic_url_hd':'https://images.test/large.jpg'}}],
                         'suggested':{'username':'someone_else','profile_pic_url_hd':'https://images.test/wrong.jpg'}}
                 body = '<script type="application/json">'+json.dumps(data)+'</script>'
-                with patch('server.open_url',return_value=self.profile_response(body,url)) as opened:
+                with patch('server.open_url',return_value=self.profile_response(body,url)) as opened, patch('server.instagram_api_avatar',return_value=[]), patch('server.largest_avatar',side_effect=lambda urls:(urls[0],None)):
                     avatar, title = server.image_link(url,profile=True)
                 self.assertEqual(avatar,'https://images.test/large.jpg')
                 self.assertIn('@example',title)
@@ -374,7 +374,7 @@ class DartTests(unittest.TestCase):
         url = 'https://www.instagram.com/example/'
         page = '<title>Sign in to Instagram</title>'
         api = json.dumps({'data':{'user':{'username':'example','is_private':True,'profile_pic_url_hd':'https://images.test/avatar.jpg'}}})
-        with patch('server.open_url',side_effect=[self.profile_response(page,url),self.profile_response(api,url,'application/json')]) as opened:
+        with patch('server.open_url',side_effect=[self.profile_response(page,url),self.profile_response(api,url,'application/json')]) as opened, patch('server.largest_avatar',side_effect=lambda urls:(urls[0],None)):
             avatar, _ = server.image_link(url,profile=True)
         self.assertEqual(avatar,'https://images.test/avatar.jpg')
         self.assertIn('username=example',opened.call_args_list[1].args[0])
@@ -403,6 +403,36 @@ class DartTests(unittest.TestCase):
         parser = server.Metadata()
         parser.feed(body)
         self.assertEqual(server.profile_image(body,parser,'https://source.test/person'),'https://images.test/person.png')
+
+
+    def test_measured_pixels_override_misleading_hd_field(self):
+        def png(w,h):
+            return b'\x89PNG\r\n\x1a\n'+b'\0'*8+server.struct.pack('>II',w,h)
+        responses = [io.BytesIO(png(150,150)),io.BytesIO(png(1080,1080))]
+        with patch('server.open_url',side_effect=responses):
+            url, size = server.largest_avatar(['https://images.test/hd.jpg','https://images.test/other.jpg'])
+        self.assertEqual((url,size),('https://images.test/other.jpg',(1080,1080)))
+
+    def test_page_thumbnail_does_not_skip_profile_lookup(self):
+        url = 'https://www.instagram.com/example/'
+        data = {'username':'example','profile_pic_url_hd':'https://images.test/small.jpg'}
+        body = '<script type="application/json">'+json.dumps(data)+'</script>'
+        with patch('server.open_url',return_value=self.profile_response(body,url)), patch('server.instagram_api_avatar',return_value=['https://images.test/large.jpg']) as lookup, patch('server.largest_avatar',return_value=('https://images.test/large.jpg',(1080,1080))) as compare:
+            avatar, title = server.image_link(url,profile=True)
+        lookup.assert_called_once_with('example',all_candidates=True)
+        self.assertIn('https://images.test/small.jpg',compare.call_args.args[0])
+        self.assertEqual(avatar,'https://images.test/large.jpg')
+        self.assertIn('1080 × 1080',title)
+
+    def test_real_image_dimension_headers(self):
+        source = self.media_fixture(image=True)
+        self.assertEqual(server.raster_size(source.read_bytes()),(32,32))
+        with tempfile.TemporaryDirectory(dir=self.tmp.name) as directory:
+            for fmt in ('jpg','webp'):
+                path = Path(directory)/'source.png'
+                path.write_bytes(source.read_bytes())
+                output, _ = server.convert_file({'dir':Path(directory),'kind':'photo','output_format':fmt},path,'source.png')
+                self.assertEqual(server.raster_size(output.read_bytes()),(32,32))
 
 
 if __name__ == '__main__':

@@ -14,6 +14,7 @@ import secrets
 import shutil
 import signal
 import subprocess
+import struct
 import sys
 import threading
 import time
@@ -197,7 +198,82 @@ def avatar_field(node):
     return None
 
 
-def instagram_api_avatar(username):
+def avatar_urls(node):
+    urls = [avatar_field(node)]
+    for key in ('profile_pic_url_hd', 'profile_pic_url', 'avatar_url', 'profile_image_url_https'):
+        urls.append(node.get(key))
+    for key in ('hd_profile_pic_url_info', 'profile_picture', 'profilePicture'):
+        value = node.get(key)
+        if isinstance(value, dict):
+            urls.append(value.get('url') or value.get('uri'))
+    versions = []
+    for key in ('hd_profile_pic_versions', 'profile_pic_versions'):
+        value = node.get(key)
+        if isinstance(value, list):
+            versions.extend(v for v in value if isinstance(v, dict))
+    def area(v):
+        w, h = v.get('width'), v.get('height')
+        return w * h if isinstance(w, (int, float)) and isinstance(h, (int, float)) else 0
+    urls = [v.get('url') for v in sorted(versions, key=area, reverse=True)] + urls
+    return list(dict.fromkeys(u for u in urls if isinstance(u, str) and u))
+
+
+def raster_size(data):
+    """Read dimensions from bounded image headers without decoding/upscaling."""
+    if data.startswith(b'\x89PNG\r\n\x1a\n') and len(data) >= 24:
+        return struct.unpack('>II', data[16:24])
+    if data.startswith(b'RIFF') and data[8:12] == b'WEBP':
+        if data[12:16] == b'VP8X' and len(data) >= 30:
+            return int.from_bytes(data[24:27], 'little') + 1, int.from_bytes(data[27:30], 'little') + 1
+        if data[12:16] == b'VP8 ' and len(data) >= 30 and data[23:26] == b'\x9d\x01\x2a':
+            w, h = struct.unpack('<HH', data[26:30])
+            return w & 16383, h & 16383
+        if data[12:16] == b'VP8L' and len(data) >= 25 and data[20] == 0x2f:
+            bits = int.from_bytes(data[21:25], 'little')
+            return (bits & 16383) + 1, ((bits >> 14) & 16383) + 1
+    if data.startswith(b'\xff\xd8'):
+        pos = 2
+        while pos + 4 <= len(data):
+            if data[pos] != 255:
+                break
+            while pos < len(data) and data[pos] == 255:
+                pos += 1
+            if pos >= len(data):
+                break
+            marker = data[pos]
+            pos += 1
+            if marker in (0xd8, 0xd9, 0x01) or 0xd0 <= marker <= 0xd7:
+                continue
+            if pos + 2 > len(data):
+                break
+            length = int.from_bytes(data[pos:pos+2], 'big')
+            if length < 2:
+                break
+            if marker in (0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf) and pos + 7 <= len(data):
+                h, w = struct.unpack('>HH', data[pos+3:pos+7])
+                return w, h
+            pos += length
+    return None
+
+
+def largest_avatar(urls):
+    urls = list(dict.fromkeys(urls))[:6]
+    best = None
+    for url in urls:
+        try:
+            validate_url(url)
+            with open_url(url) as response:
+                size = raster_size(response.read(256 * 1024))
+            if size and size[0] > 0 and size[1] > 0:
+                candidate = (size[0] * size[1], url, size)
+                if best is None or candidate[0] > best[0]:
+                    best = candidate
+        except (OSError, ValueError):
+            continue
+    return (best[1], best[2]) if best else (urls[0], None) if urls else (None, None)
+
+
+def instagram_api_avatar(username, all_candidates=False):
     # Public profile metadata only. No cookies, credentials, or access-control bypass.
     endpoint = 'https://www.instagram.com/api/v1/users/web_profile_info/?' + urllib.parse.urlencode({'username': username})
     try:
@@ -205,7 +281,7 @@ def instagram_api_avatar(username):
             data = json.loads(response.read(2 * 1024 * 1024))
         user = (data.get('data') or {}).get('user') or {}
         if str(user.get('username', '')).lower() == username:
-            return avatar_field(user)
+            return avatar_urls(user) if all_candidates else avatar_field(user)
     except (OSError, ValueError, AttributeError, RecursionError):
         pass
     return None
@@ -252,9 +328,9 @@ def image_link(url, profile=False):
         response = open_url(url)
     except (OSError, ValueError):
         if username:
-            avatar = instagram_api_avatar(username)
+            avatar, size = largest_avatar(instagram_api_avatar(username, all_candidates=True) or [])
             if avatar:
-                return validate_url(avatar), '@' + username + ' · profile picture'
+                return validate_url(avatar), '@' + username + (f' · {size[0]} × {size[1]} source' if size else ' · profile picture')
         raise ValueError('The platform did not allow DART to read this profile. Its public avatar may require a logged-in session or be temporarily blocked.'
                          if profile else 'The image source could not be reached. Check the link and try again.')
     with response:
@@ -267,8 +343,19 @@ def image_link(url, profile=False):
         parser.feed(content)
         if profile:
             avatar = profile_image(content, parser, response.url, username)
-            if not avatar and username:
-                avatar = instagram_api_avatar(username)
+            if username:
+                # Always compare public API candidates, even when page metadata
+                # already contains a small avatar or a misleading "HD" URL.
+                urls = instagram_api_avatar(username, all_candidates=True) or []
+                for node in json_nodes(parser.scripts):
+                    if str(node.get('username', '')).lower() == username:
+                        urls.extend(avatar_urls(node))
+                if avatar:
+                    urls.append(avatar)
+                urls = [urllib.parse.urljoin(response.url, u) for u in urls]
+                avatar, size = largest_avatar(urls)
+                if avatar and size:
+                    return validate_url(avatar), '@' + username + f' · {size[0]} × {size[1]} source'
             if not avatar:
                 raise ValueError('The platform did not return a publicly accessible avatar for this profile. A private profile can work when its avatar is public; a login requirement or platform block cannot be bypassed. You can also use the direct avatar image link.')
             return validate_url(urllib.parse.urljoin(response.url, avatar)), ('@' + username + ' · profile picture') if username else 'Public profile image'
@@ -406,7 +493,11 @@ def work(job, action):
                 return
             path, name, kind = fetch_file(job['asset_url'], job['dir'], job, job['kind'] in ('photo', 'profile'))
         path, name = convert_file(job, path, name)
-        job.update(path=path, filename=name, content_type=mimetypes.guess_type(name)[0] or 'application/octet-stream', state='done', stage='done', progress=100)
+        dimensions = None
+        if job['kind'] in ('photo', 'profile'):
+            with path.open('rb') as image:
+                dimensions = raster_size(image.read(256 * 1024))
+        job.update(path=path, filename=name, content_type=mimetypes.guess_type(name)[0] or 'application/octet-stream', dimensions=dimensions, state='done', stage='done', progress=100)
     except Exception as e:
         job.update(state='cancelled' if job.get('cancelled') else 'error', error=str(e) if isinstance(e, ValueError) else 'The source could not be reached. Check the link and try again.')
         shutil.rmtree(job['dir'], ignore_errors=True)
@@ -493,7 +584,7 @@ class Handler(BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
-            self.reply({k: job[k] for k in ('id', 'state', 'stage', 'title', 'qualities', 'formats', 'progress', 'error', 'platform', 'filename') if k in job})
+            self.reply({k: job[k] for k in ('id', 'state', 'stage', 'title', 'qualities', 'formats', 'progress', 'dimensions', 'error', 'platform', 'filename') if k in job})
             return
         asset = {'/': 'index.html', '/style.css': 'style.css', '/app.js': 'app.js', '/theme.js': 'theme.js', '/bat.svg': 'bat.svg'}.get(path)
         if not asset:
