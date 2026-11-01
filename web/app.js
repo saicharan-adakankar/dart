@@ -45,8 +45,8 @@ function syncHints() {
   const name = selectedPlatform==='auto' ? '' : selectedPlatform==='Web' ? 'website' : selectedPlatform;
   const noun = names[kind()];
   $('url').placeholder = name ? `Paste a ${name} ${noun} link` : kind()==='file' ? 'Paste a direct file URL' : `Paste a ${noun} link`;
-  $('panel-title').textContent = name ? `${name} downloader` : 'Your next download';
-  $('inspect').firstElementChild.textContent = `Find my ${noun}`;
+  $('panel-title').textContent = name ? `${name} downloader` : 'Download media';
+  $('inspect').firstElementChild.textContent = `Find ${noun}`;
   $('hint').textContent = kind()==='profile' ? 'Publicly visible avatars, including on private accounts.' : kind()==='file' ? 'Use a direct file URL, rather than a webpage.' : 'Public links only. We’ll detect the source.';
 }
 async function api(path,body) {
