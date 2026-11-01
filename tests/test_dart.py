@@ -174,14 +174,6 @@ class DartTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError):
             self.request('/../server.py')
 
-    def test_size_limit(self):
-        with patch('server.MAX_BYTES', 2):
-            key, _ = self.inspect('file', 'http://source.test/file.bin')
-            self.request(f'/api/jobs/{key}/download',{'quality':'original'})
-            job = self.wait(key)
-            self.assertEqual(job['state'], 'error')
-            self.assertFalse(server.JOBS[key]['dir'].exists())
-
     def test_video_pipeline(self):
         info = {'title':'Fixture video','formats':[{'height':720,'vcodec':'h264'},{'height':1080,'vcodec':'h264'}]}
         def fake_extract(job, args, timeout):

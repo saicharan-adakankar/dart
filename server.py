@@ -24,7 +24,6 @@ from proxy import start_proxy
 
 ROOT = Path(__file__).parent
 DATA = Path(os.environ.get('DART_DATA', str(ROOT / '.dart-data')))
-MAX_BYTES = 512 * 1024 * 1024
 TTL = 3600
 JOBS = {}
 LOCK = threading.RLock()
@@ -77,8 +76,6 @@ def fetch_file(url, dest, job, image=False):
         if image and (not kind.startswith('image/') or kind == 'image/svg+xml'):
             raise ValueError('The source did not return a supported raster image')
         total = int(response.headers.get('Content-Length') or 0)
-        if total > MAX_BYTES:
-            raise ValueError('This file exceeds the 512 MB limit')
         message = email.message.Message()
         message['Content-Disposition'] = response.headers.get('Content-Disposition', '')
         name = message.get_filename() or Path(urllib.parse.urlsplit(response.url).path).name or 'download'
@@ -90,14 +87,10 @@ def fetch_file(url, dest, job, image=False):
             while True:
                 if job.get('cancelled'):
                     raise ValueError('Download cancelled')
-                if time.time() - job['created'] > 600:
-                    raise ValueError('Download timed out. Try a smaller file.')
                 chunk = response.read(65536)
                 if not chunk:
                     break
                 size += len(chunk)
-                if size > MAX_BYTES:
-                    raise ValueError('This file exceeds the 512 MB limit')
                 f.write(chunk)
                 job['progress'] = min(99, round(size / total * 100)) if total else None
         if not size:
@@ -148,15 +141,12 @@ def ytdlp(job, args, timeout):
     # Process group includes any local FFmpeg merger. All source requests use the guarded proxy.
     proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
     job['process'] = proc
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + timeout if timeout is not None else None
     try:
         while True:
             if job.get('cancelled'):
                 raise ValueError('Download cancelled')
-            size = sum(p.stat().st_size for p in job['dir'].glob('*') if p.is_file())
-            if size > MAX_BYTES:
-                raise ValueError('This download exceeds the 512 MB limit')
-            if time.monotonic() > deadline:
+            if deadline is not None and time.monotonic() > deadline:
                 raise ValueError('The source took too long. Try again or use a smaller file.')
             try:
                 stdout, stderr = proc.communicate(timeout=0.5)
@@ -191,12 +181,12 @@ def work(job, action):
             safe = '[protocol~="^(https?|m3u8_native|http_dash_segments)$"]'
             cap = '' if quality == 'best' else f'[height<={quality}]'
             fmt = f'bv*{cap}{safe}+ba{safe}/b{cap}{safe}'
-            ytdlp(job, ['--format', fmt, '--max-filesize', str(MAX_BYTES), '--downloader', 'native',
+            ytdlp(job, ['--format', fmt, '--downloader', 'native',
                        '--hls-prefer-native', '--no-progress', '--restrict-filenames', '--playlist-items', '1',
-                       '--output', str(job['dir'] / '%(title).100s.%(ext)s')], 600)
+                       '--output', str(job['dir'] / '%(title).100s.%(ext)s')], None)
             files = [p for p in job['dir'].iterdir() if p.is_file() and p.suffix not in ('.part', '.ytdl', '.temp')]
             if len(files) != 1:
-                raise ValueError('No complete file was produced. The source may exceed the size limit.')
+                raise ValueError('No complete file was produced. Try another source or quality.')
             path = files[0]
             job.update(path=path, filename=path.name, content_type=mimetypes.guess_type(path.name)[0] or 'application/octet-stream')
         else:

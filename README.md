@@ -16,7 +16,7 @@ docker compose up --build
 
 Open **http://localhost:8000**. Stop with `docker compose down`.
 
-The container includes Python, FFmpeg, Node.js 22, and yt-dlp. It runs as a non-root user with a read-only filesystem and temporary download storage. The published port is bound to your computer, not all network interfaces.
+The container includes Python, FFmpeg, Node.js 22, and yt-dlp. It runs as a non-root user with a read-only filesystem and download storage cleared at startup. The published port is bound to your computer, not all network interfaces.
 
 ## Run without Docker
 
@@ -56,7 +56,7 @@ YouTube, Instagram, Facebook, and X are recognized automatically. Their video su
 
 DART does not upscale media or recover quality removed by a source. Container and codec depend on available formats. Photo/profile bytes are not recompressed. Download only content you own or have permission to save.
 
-Limits: 512 MB per job's working files (including intermediate video streams), two active workers, four admitted operations, 64 retained jobs, 30 mutation requests/minute/client, 10-minute download timeout, 80-second video-inspection timeout. Video merging can need temporary space larger than the final file. Docker temporary storage is capped at 1.2 GB; capacity errors require discarding earlier downloads or waiting for expiry.
+DART imposes no file-size cap or overall download-duration limit. Available disk space and source restrictions still apply; video merging needs additional temporary space. Network inactivity timeouts remain to detect stalled connections. Other limits: two active workers, four admitted operations, 64 retained jobs, 30 mutation requests/minute/client, and an 80-second video-inspection timeout. Completed and inactive jobs expire after one hour; active downloads are not expired.
 
 ## Architecture
 
@@ -91,7 +91,7 @@ python -m unittest discover -s tests -v
 node --check web/app.js
 ```
 
-Tests use controlled local fixtures through the network guard; they do not need social accounts. They cover exact-byte file downloads, photo metadata, explicit avatars, generic-avatar rejection, private redirects, mixed public/private DNS answers, pinned-IP connections, Host validation, cancellation, working-size limits, traversal, and the real yt-dlp video pipeline.
+Tests use controlled local fixtures through the network guard; they do not need social accounts. They cover exact-byte file downloads, photo metadata, explicit avatars, generic-avatar rejection, private redirects, mixed public/private DNS answers, pinned-IP connections, Host validation, cancellation, traversal, and the real yt-dlp video pipeline.
 
 Browser visual QA and a local Docker build were unavailable in the development environment. CI performs the Docker build; inspect its result before relying on that packaging.
 
